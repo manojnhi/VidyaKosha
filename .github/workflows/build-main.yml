@@ -1,0 +1,197 @@
+name: Build VidyaKosha (.apk & .exe)
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+jobs:
+  verify-web-and-server:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: TypeScript type-check
+        run: npm run lint
+
+      - name: Run domain & offline API unit tests
+        run: npm test
+
+      - name: Build production frontend & PWA bundle
+        run: npm run build
+
+      - name: Verify bundled production server (Electron runtime parity)
+        run: |
+          npx esbuild server.ts --bundle --platform=node --format=cjs --outfile=/tmp/vk-server.cjs --external:vite
+          NODE_ENV=production PORT=3000 VIDYAKOSHA_DATA_DIR=/tmp/vk-data VIDYAKOSHA_DIST_DIR="$PWD/dist" node /tmp/vk-server.cjs > /tmp/vk-server.log 2>&1 &
+          SERVER_PID=$!
+          for i in $(seq 1 20); do
+            if curl -fsS http://localhost:3000/api/health > /dev/null && curl -fsS http://localhost:3000/api/books > /dev/null && curl -fsS http://localhost:3000/ > /dev/null; then
+              echo "Bundled production server responded OK"
+              kill $SERVER_PID || true
+              rm -rf /tmp/vk-data /tmp/vk-server.cjs
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/vk-server.log || true
+          kill $SERVER_PID || true
+          rm -rf /tmp/vk-data /tmp/vk-server.cjs
+          exit 1
+
+  build-windows-exe:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install root dependencies & build web bundle
+        shell: bash
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+          npm run build
+
+      - name: Bundle backend server & stage Electron payload
+        shell: bash
+        run: |
+          mkdir -p electron/app electron/build
+          npx esbuild server.ts --bundle --platform=node --format=cjs --outfile=electron/app/server.cjs --external:vite
+          node -e "const fs = require('fs'); fs.cpSync('dist', 'electron/app/dist', { recursive: true, force: true }); fs.copyFileSync('public/pwa-512x512.png', 'electron/build/icon.png');"
+
+      - name: Install Electron builder & package Windows .exe installers
+        shell: bash
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: |
+          cd electron
+          npm install --no-audit --no-fund
+          npx electron-builder --win nsis portable --publish never
+          ls -lh dist/*.exe
+
+      - name: Upload Windows .exe artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: vidyakosha-windows-exe
+          path: |
+            electron/dist/VidyaKosha-Setup-*.exe
+            electron/dist/VidyaKosha-Portable-*.exe
+          if-no-files-found: error
+          retention-days: 14
+
+  build-android-apk:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup Java 17 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Android SDK & accept licenses
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android 34 platform & build-tools
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Install root dependencies & build web bundle for Capacitor
+        env:
+          VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+          npm run build
+
+      - name: Stage Capacitor Android project & assemble APK
+        run: |
+          node -e "const fs = require('fs'); fs.cpSync('dist', 'mobile/www', { recursive: true, force: true });"
+          cd mobile
+          npm install --no-audit --no-fund
+          CI=true npx cap add android
+          CI=true npx cap sync android
+          echo "sdk.dir=${ANDROID_HOME:-$ANDROID_SDK_ROOT}" > android/local.properties
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon --stacktrace
+          cp app/build/outputs/apk/debug/app-debug.apk ../VidyaKosha-Android.apk
+          ls -lh ../VidyaKosha-Android.apk
+
+      - name: Upload Android .apk artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vidyakosha-android-apk
+          path: mobile/VidyaKosha-Android.apk
+          if-no-files-found: error
+          retention-days: 14
+
+  package-combined-installers:
+    needs: [verify-web-and-server, build-windows-exe, build-android-apk]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download Windows .exe installers
+        uses: actions/download-artifact@v4
+        with:
+          name: vidyakosha-windows-exe
+          path: combined-installers
+
+      - name: Download Android .apk installer
+        uses: actions/download-artifact@v4
+        with:
+          name: vidyakosha-android-apk
+          path: combined-installers
+
+      - name: Verify combined installers folder
+        run: ls -lh combined-installers
+
+      - name: Upload combined VidyaKosha-APK-and-EXE artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: VidyaKosha-APK-and-EXE
+          path: combined-installers/
+          if-no-files-found: error
+          retention-days: 14
