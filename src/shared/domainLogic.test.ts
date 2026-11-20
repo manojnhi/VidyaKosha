@@ -381,3 +381,38 @@ test('pdf-lib preview slicing and nativeLocalApi PDF book workflow work end-to-e
   assert.equal(contentRes.pages.length, 3);
 });
 
+test('parseNonPdfBytes parses TXT, HTML, RTF, and unknown binary formats without rejecting', async () => {
+  const { parseNonPdfBytes } = await import('../utils/bookFileParser');
+  const enc = new TextEncoder();
+
+  // 1. Long TXT splits into multiple readable pages
+  const longTxt = Array.from({ length: 12 }, (_, i) => `Paragraph ${i + 1}: ${'VidyaKosha textbook content. '.repeat(12)}`).join('\n\n');
+  const txtRes = await parseNonPdfBytes(enc.encode(longTxt), 'hindi-vyakaran.txt');
+  assert.equal(txtRes.format, 'reflowable');
+  assert.ok(txtRes.pages.length >= 2);
+  assert.equal(txtRes.suggestedTitle, 'hindi vyakaran');
+
+  // 2. HTML strips scripts/tags cleanly
+  const htmlRes = await parseNonPdfBytes(
+    enc.encode('<html><head><script>alert(1)</script></head><body><h1>Lesson 1</h1><p>Real curriculum body.</p></body></html>'),
+    'lesson_one.html'
+  );
+  assert.equal(htmlRes.format, 'reflowable');
+  assert.ok(htmlRes.pages[0].body.includes('Lesson 1'));
+  assert.ok(!htmlRes.pages[0].body.includes('alert(1)'));
+
+  // 3. RTF strips control words
+  const rtfRes = await parseNonPdfBytes(
+    enc.encode('{\\rtf1\\ansi\\deff0 {\\fonttbl{\\f0 Arial;}} \\pard Chapter One\\par Hello RTF Book!}'),
+    'notes.rtf'
+  );
+  assert.ok(rtfRes.pages[0].body.includes('Chapter One'));
+
+  // 4. Unknown custom format is still accepted cleanly
+  const unknownRes = await parseNonPdfBytes(new Uint8Array([0, 1, 2, 3, 4]), 'syllabus.customext');
+  assert.equal(unknownRes.format, 'reflowable');
+  assert.equal(unknownRes.pages.length, 1);
+  assert.ok(unknownRes.pages[0].body.includes('syllabus.customext'));
+});
+
+

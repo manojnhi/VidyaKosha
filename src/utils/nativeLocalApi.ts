@@ -91,6 +91,7 @@ const DEFAULT_DEMO_LOGIN_PASSWORDS: Record<string, string> = {
 
 let memoryFallbackStore: NativeDb | null = null;
 const nativePdfBlobs = new Map<string, Uint8Array>();
+const nativeFileDataUrls = new Map<string, string>();
 
 export function storeNativePdfBytes(fileId: string, bytes: Uint8Array): void {
   nativePdfBlobs.set(fileId, bytes);
@@ -99,6 +100,15 @@ export function storeNativePdfBytes(fileId: string, bytes: Uint8Array): void {
 export function getNativePdfBytes(fileId?: string): Uint8Array | null {
   if (!fileId) return null;
   return nativePdfBlobs.get(fileId) || null;
+}
+
+export function storeNativeFileDataUrl(fileId: string, dataUrl: string): void {
+  nativeFileDataUrls.set(fileId, dataUrl);
+}
+
+export function getNativeFileDataUrl(fileId?: string): string | null {
+  if (!fileId) return null;
+  return nativeFileDataUrls.get(fileId) || null;
 }
 
 function uid(prefix: string): string {
@@ -441,9 +451,19 @@ export async function handleNativeLocalApi<T>(
     const access = checkBookAccess(authUser ? toSafeUser(authUser) : null, book, db.subscriptions);
     book.readCount += 1;
     saveNativeDb(db);
-    const pages =
+    const rawPages =
       access.accessLevel === 'full' ? book.pages : book.pages.slice(0, Math.max(1, access.allowedPages));
+    const pages = rawPages.map((p) => {
+      if (p.attachmentFileId && nativeFileDataUrls.has(p.attachmentFileId)) {
+        return { ...p, imageUrl: nativeFileDataUrls.get(p.attachmentFileId) };
+      }
+      return p;
+    });
     const hasPdf = Boolean(book.pdfFileId && nativePdfBlobs.has(book.pdfFileId));
+    const attachmentUrl =
+      access.accessLevel === 'full' && book.attachmentFileId && nativeFileDataUrls.has(book.attachmentFileId)
+        ? nativeFileDataUrls.get(book.attachmentFileId)
+        : undefined;
     return {
       bookId: book.id,
       accessLevel: access.accessLevel,
@@ -452,6 +472,8 @@ export async function handleNativeLocalApi<T>(
       pages,
       hasPdf,
       pdfUrl: hasPdf ? `native-pdf://${book.pdfFileId}` : undefined,
+      attachmentUrl,
+      attachmentFileName: book.attachmentFileName,
       licensePermissions: {
         allowOfflineDownload: access.accessLevel === 'full' && book.license.allowOfflineDownload,
         allowPrinting: access.accessLevel === 'full' && book.license.allowPrinting,
@@ -777,6 +799,10 @@ export async function handleNativeLocalApi<T>(
       pdfFileId: payload.pdfFileId || undefined,
       pdfFileName: payload.pdfFileName || undefined,
       pdfFileSizeBytes: typeof payload.pdfFileSizeBytes === 'number' ? payload.pdfFileSizeBytes : undefined,
+      attachmentFileId: payload.attachmentFileId || undefined,
+      attachmentFileName: payload.attachmentFileName || undefined,
+      attachmentSizeBytes: typeof payload.attachmentSizeBytes === 'number' ? payload.attachmentSizeBytes : undefined,
+      attachmentMimeType: payload.attachmentMimeType || undefined,
       license: payload.license || {
         rightsHolder: '',
         licenseType: 'publisher_direct',
@@ -821,6 +847,13 @@ export async function handleNativeLocalApi<T>(
       pdfFileName: patch.pdfFileName === null ? undefined : patch.pdfFileName ?? existing.pdfFileName,
       pdfFileSizeBytes:
         patch.pdfFileSizeBytes === null ? undefined : patch.pdfFileSizeBytes ?? existing.pdfFileSizeBytes,
+      attachmentFileId: patch.attachmentFileId === null ? undefined : patch.attachmentFileId ?? existing.attachmentFileId,
+      attachmentFileName:
+        patch.attachmentFileName === null ? undefined : patch.attachmentFileName ?? existing.attachmentFileName,
+      attachmentSizeBytes:
+        patch.attachmentSizeBytes === null ? undefined : patch.attachmentSizeBytes ?? existing.attachmentSizeBytes,
+      attachmentMimeType:
+        patch.attachmentMimeType === null ? undefined : patch.attachmentMimeType ?? existing.attachmentMimeType,
       license: patch.license ? { ...existing.license, ...patch.license } : existing.license,
       updatedAt: new Date().toISOString(),
     };

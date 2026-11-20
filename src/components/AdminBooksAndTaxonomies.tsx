@@ -14,7 +14,7 @@ import {
 import { useApp } from '../context/AppContext';
 import type { Book, BookPage, BulkImportJob } from '../shared/types';
 import { apiFetch, type EnrichedBook } from '../utils/api';
-import { formatFileSize, inspectPdfFile, uploadPdfFile } from '../utils/pdfUtils';
+import { formatFileSize, processAndUploadBookFiles } from '../utils/pdfUtils';
 
 export const AdminBooksSection: React.FC<{
   allBooks: EnrichedBook[];
@@ -48,13 +48,17 @@ export const AdminBooksSection: React.FC<{
   const [sampleHeading, setSampleHeading] = useState('Chapter 1: Introduction');
   const [sampleBody, setSampleBody] = useState('Authorized digital curriculum textbook content.');
 
-  // PDF upload state
+  // Uploaded book file state (all formats: PDF, EPUB, TXT, MD, HTML, DOCX, DOC, RTF, Images, etc.)
   const [pdfFileId, setPdfFileId] = useState<string | undefined>(undefined);
   const [pdfFileName, setPdfFileName] = useState<string | undefined>(undefined);
   const [pdfFileSizeBytes, setPdfFileSizeBytes] = useState<number | undefined>(undefined);
-  const [pdfPageCount, setPdfPageCount] = useState<number | undefined>(undefined);
-  const [pdfPages, setPdfPages] = useState<BookPage[] | null>(null);
-  const [pdfUploading, setPdfUploading] = useState(false);
+  const [attachmentFileId, setAttachmentFileId] = useState<string | undefined>(undefined);
+  const [attachmentFileName, setAttachmentFileName] = useState<string | undefined>(undefined);
+  const [attachmentSizeBytes, setAttachmentSizeBytes] = useState<number | undefined>(undefined);
+  const [attachmentMimeType, setAttachmentMimeType] = useState<string | undefined>(undefined);
+  const [uploadedPageCount, setUploadedPageCount] = useState<number | undefined>(undefined);
+  const [uploadedPages, setUploadedPages] = useState<BookPage[] | null>(null);
+  const [fileUploading, setFileUploading] = useState(false);
 
   // Mandatory Licensing & Rights fields
   const [rightsHolder, setRightsHolder] = useState('');
@@ -108,8 +112,12 @@ export const AdminBooksSection: React.FC<{
     setPdfFileId(undefined);
     setPdfFileName(undefined);
     setPdfFileSizeBytes(undefined);
-    setPdfPageCount(undefined);
-    setPdfPages(null);
+    setAttachmentFileId(undefined);
+    setAttachmentFileName(undefined);
+    setAttachmentSizeBytes(undefined);
+    setAttachmentMimeType(undefined);
+    setUploadedPageCount(undefined);
+    setUploadedPages(null);
     setError(null);
     setShowModal(true);
   };
@@ -133,8 +141,12 @@ export const AdminBooksSection: React.FC<{
     setPdfFileId(b.pdfFileId);
     setPdfFileName(b.pdfFileName);
     setPdfFileSizeBytes(b.pdfFileSizeBytes);
-    setPdfPageCount(b.pdfFileId ? b.totalPages : undefined);
-    setPdfPages(null);
+    setAttachmentFileId(b.attachmentFileId);
+    setAttachmentFileName(b.attachmentFileName);
+    setAttachmentSizeBytes(b.attachmentSizeBytes);
+    setAttachmentMimeType(b.attachmentMimeType);
+    setUploadedPageCount(b.pdfFileId || b.attachmentFileId ? b.totalPages : undefined);
+    setUploadedPages(null);
     setRightsHolder(b.license.rightsHolder);
     setLicenseType(b.license.licenseType);
     setLicenseNumber(b.license.licenseNumber);
@@ -146,43 +158,40 @@ export const AdminBooksSection: React.FC<{
     setShowModal(true);
   };
 
-  const handlePdfSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  const handleBookFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const fileList = e.target.files;
+    if (!fileList || fileList.length === 0) return;
+    const files = Array.from(fileList);
     setError(null);
-    if (!file.name.toLowerCase().endsWith('.pdf') && file.type !== 'application/pdf') {
-      setError('Please select a valid .pdf file.');
-      return;
-    }
-    if (file.size > 50 * 1024 * 1024) {
-      setError('PDF size must be 50 MB or smaller.');
-      return;
-    }
-    setPdfUploading(true);
+    setFileUploading(true);
     try {
-      const inspected = await inspectPdfFile(file);
-      const uploaded = await uploadPdfFile(file, inspected.pageCount);
-      setPdfFileId(uploaded.pdfFileId);
-      setPdfFileName(uploaded.fileName);
-      setPdfFileSizeBytes(uploaded.sizeBytes);
-      setPdfPageCount(uploaded.pageCount);
-      setPdfPages(inspected.pages);
-      setFormat('pdf');
-      if (!title.trim() && inspected.suggestedTitle) {
-        setTitle(inspected.suggestedTitle);
+      const result = await processAndUploadBookFiles(files);
+      setFormat(result.format);
+      setPdfFileId(result.pdfFileId);
+      setPdfFileName(result.pdfFileName);
+      setPdfFileSizeBytes(result.pdfFileSizeBytes);
+      setAttachmentFileId(result.attachmentFileId);
+      setAttachmentFileName(result.attachmentFileName);
+      setAttachmentSizeBytes(result.attachmentSizeBytes);
+      setAttachmentMimeType(result.attachmentMimeType);
+      setUploadedPageCount(result.pageCount);
+      setUploadedPages(result.pages);
+      if (!title.trim() && result.suggestedTitle) {
+        setTitle(result.suggestedTitle);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unable to upload PDF.');
+      setError(err instanceof Error ? err.message : 'Unable to upload book file.');
     } finally {
-      setPdfUploading(false);
+      setFileUploading(false);
+      e.target.value = '';
     }
   };
 
   const handleSaveBook = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
-    const resolvedPages = pdfPages
-      ? pdfPages
+    const resolvedPages = uploadedPages
+      ? uploadedPages
       : editingId
         ? undefined
         : [
@@ -209,11 +218,15 @@ export const AdminBooksSection: React.FC<{
       isFree,
       price: Number(price || 0),
       previewPagesCount: Number(previewPages || 2),
-      totalPages: pdfPageCount,
+      totalPages: uploadedPageCount,
       pages: resolvedPages,
       pdfFileId: pdfFileId ?? null,
       pdfFileName: pdfFileName ?? null,
       pdfFileSizeBytes: pdfFileSizeBytes ?? null,
+      attachmentFileId: attachmentFileId ?? null,
+      attachmentFileName: attachmentFileName ?? null,
+      attachmentSizeBytes: attachmentSizeBytes ?? null,
+      attachmentMimeType: attachmentMimeType ?? null,
       license: {
         rightsHolder,
         licenseType,
@@ -393,10 +406,10 @@ export const AdminBooksSection: React.FC<{
                 </td>
                 <td className="px-4 py-3 uppercase text-slate-700">
                   <span>{b.contentLanguageCode} · {b.format}</span>
-                  {b.pdfFileId && (
+                  {(b.pdfFileId || b.attachmentFileId) && (
                     <span className="ml-1.5 inline-flex items-center gap-0.5 rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-semibold normal-case text-blue-800">
                       <FileText className="h-2.5 w-2.5" />
-                      {b.totalPages}p PDF
+                      {b.totalPages}p {b.pdfFileId ? 'PDF' : b.format.toUpperCase()}
                     </span>
                   )}
                 </td>
@@ -547,43 +560,56 @@ export const AdminBooksSection: React.FC<{
                 <span>Free open-access textbook</span>
               </label>
 
-              {/* PDF File Upload Section */}
+              {/* Universal Book File Upload Section (All Formats Accepted) */}
               <div className="rounded-lg border border-blue-200 bg-blue-50/60 p-3.5">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
-                    <p className="font-semibold text-slate-900">Upload Book PDF (.pdf, up to 50 MB)</p>
+                    <p className="font-semibold text-slate-900">Upload Book File (All Formats Accepted · up to 50 MB)</p>
                     <p className="text-[11px] text-slate-600">
-                      Automatically detects total pages, extracts text for Search &amp; Audiobook, and streams securely.
+                      Supports PDF, EPUB, TXT, MD, HTML, DOCX, DOC, RTF &amp; Images (JPG/PNG/WebP) — auto-prepares pages for Reader &amp; Audio.
                     </p>
                   </div>
                   <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-blue-900 px-3 py-2 text-xs font-medium text-white hover:bg-blue-800">
-                    {pdfUploading ? (
+                    {fileUploading ? (
                       <Loader2 className="h-3.5 w-3.5 animate-spin" />
                     ) : (
                       <FileUp className="h-3.5 w-3.5" />
                     )}
-                    <span>{pdfUploading ? 'Uploading PDF...' : pdfFileId ? 'Replace PDF' : 'Choose PDF File'}</span>
+                    <span>
+                      {fileUploading
+                        ? 'Processing File...'
+                        : pdfFileId || attachmentFileId || uploadedPages
+                          ? 'Replace File'
+                          : 'Choose Book File'}
+                    </span>
                     <input
                       type="file"
-                      accept=".pdf,application/pdf"
-                      disabled={pdfUploading}
-                      onChange={handlePdfSelect}
+                      multiple
+                      disabled={fileUploading}
+                      onChange={handleBookFileSelect}
                       className="sr-only"
                     />
                   </label>
                 </div>
 
-                {pdfFileId && (
+                {(pdfFileId || attachmentFileId || uploadedPages) && (
                   <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2 rounded-md border border-emerald-200 bg-white px-3 py-2">
-                    <div className="flex items-center gap-2 text-emerald-800">
+                    <div className="flex flex-wrap items-center gap-2 text-emerald-800">
                       <CheckCircle2 className="h-4 w-4 shrink-0" />
-                      <span className="font-medium">{pdfFileName || 'book.pdf'}</span>
-                      {pdfFileSizeBytes ? (
-                        <span className="text-slate-500">({formatFileSize(pdfFileSizeBytes)})</span>
+                      <span className="font-medium">
+                        {pdfFileName || attachmentFileName || `${uploadedPageCount || 1} page(s) ready`}
+                      </span>
+                      {(pdfFileSizeBytes || attachmentSizeBytes) ? (
+                        <span className="text-slate-500">
+                          ({formatFileSize(pdfFileSizeBytes || attachmentSizeBytes || 0)})
+                        </span>
                       ) : null}
-                      {pdfPageCount ? (
-                        <span className="font-mono-num text-slate-600">· {pdfPageCount} pages</span>
+                      {uploadedPageCount ? (
+                        <span className="font-mono-num text-slate-600">· {uploadedPageCount} pages</span>
                       ) : null}
+                      <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-emerald-800">
+                        {format}
+                      </span>
                     </div>
                     <button
                       type="button"
@@ -591,18 +617,22 @@ export const AdminBooksSection: React.FC<{
                         setPdfFileId(undefined);
                         setPdfFileName(undefined);
                         setPdfFileSizeBytes(undefined);
-                        setPdfPageCount(undefined);
-                        setPdfPages(null);
+                        setAttachmentFileId(undefined);
+                        setAttachmentFileName(undefined);
+                        setAttachmentSizeBytes(undefined);
+                        setAttachmentMimeType(undefined);
+                        setUploadedPageCount(undefined);
+                        setUploadedPages(null);
                       }}
                       className="text-[11px] font-medium text-red-700 hover:underline"
                     >
-                      Remove PDF
+                      Remove File
                     </button>
                   </div>
                 )}
               </div>
 
-              {!editingId && !pdfFileId && (
+              {!editingId && !pdfFileId && !attachmentFileId && !uploadedPages && (
                 <div className="space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
                   <p className="font-semibold text-slate-800">Or Enter Manual Chapter Content (Optional for non-PDF)</p>
                   <input

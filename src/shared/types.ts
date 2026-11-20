@@ -92,6 +92,8 @@ export interface BookPage {
   body: string;
   keyPoints?: string[];
   diagramLabel?: string;
+  imageUrl?: string;
+  attachmentFileId?: string;
 }
 
 export interface LearningResource {
@@ -130,6 +132,10 @@ export interface Book {
   pdfFileId?: string;
   pdfFileName?: string;
   pdfFileSizeBytes?: number;
+  attachmentFileId?: string;
+  attachmentFileName?: string;
+  attachmentSizeBytes?: number;
+  attachmentMimeType?: string;
   license: LicenseRecord;
   learningResources: LearningResource[];
   readCount: number;

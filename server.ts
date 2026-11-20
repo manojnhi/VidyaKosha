@@ -25,9 +25,11 @@ import { PDFDocument } from 'pdf-lib';
 import { hashPassword, verifyPassword } from './server/seed';
 import {
   appendAuditLog,
+  getFileUploadPath,
   getPdfUploadPath,
   loadDb,
   saveDb,
+  saveFileUpload,
   savePdfUpload,
   signToken,
   toSafeUser,
@@ -385,10 +387,16 @@ async function startServer() {
     book.readCount += 1;
     saveDb(db);
 
-    const pages =
+    const rawPages =
       decoded.accessLevel === 'full' ? book.pages : book.pages.slice(0, Math.max(1, decoded.allowedPages));
+    const pages = rawPages.map((p) =>
+      p.attachmentFileId && getFileUploadPath(p.attachmentFileId)
+        ? { ...p, imageUrl: `/api/books/${book.id}/attachment/${encodeURIComponent(p.attachmentFileId)}?token=${encodeURIComponent(token)}` }
+        : p
+    );
 
     const hasPdf = Boolean(book.pdfFileId && getPdfUploadPath(book.pdfFileId));
+    const hasAttachment = Boolean(book.attachmentFileId && getFileUploadPath(book.attachmentFileId));
     res.json({
       bookId: book.id,
       accessLevel: decoded.accessLevel,
@@ -397,6 +405,11 @@ async function startServer() {
       pages,
       hasPdf,
       pdfUrl: hasPdf ? `/api/books/${book.id}/pdf?token=${encodeURIComponent(token)}` : undefined,
+      attachmentUrl:
+        hasAttachment && decoded.accessLevel === 'full'
+          ? `/api/books/${book.id}/attachment/${encodeURIComponent(book.attachmentFileId!)}?token=${encodeURIComponent(token)}`
+          : undefined,
+      attachmentFileName: book.attachmentFileName,
       licensePermissions: {
         allowOfflineDownload: decoded.accessLevel === 'full' && book.license.allowOfflineDownload,
         allowPrinting: decoded.accessLevel === 'full' && book.license.allowPrinting,
@@ -449,6 +462,62 @@ async function startServer() {
       console.error('Error serving PDF:', err);
       res.status(500).json({ error: 'Unable to process PDF file.' });
     }
+  });
+
+  // Stream authorized non-PDF book page images or full book attachments behind signed reading token
+  app.get('/api/books/:id/attachment/:fileId', (req: AuthedRequest, res) => {
+    const token = typeof req.query.token === 'string' ? req.query.token : '';
+    const decoded = verifyToken<{
+      bookId: string;
+      userId: string;
+      accessLevel: 'full' | 'preview_only';
+      allowedPages: number;
+    }>(token);
+    if (!decoded || decoded.bookId !== req.params.id) {
+      res.status(403).json({ error: 'Invalid or expired book access token.' });
+      return;
+    }
+    const db = loadDb();
+    const book = db.books.find((b) => b.id === req.params.id);
+    if (!book) {
+      res.status(404).json({ error: 'Book not found.' });
+      return;
+    }
+    const requestedFileId = String(req.params.fileId || '');
+    const allowedPageFile = book.pages
+      .slice(0, decoded.accessLevel === 'full' ? book.pages.length : Math.max(1, decoded.allowedPages))
+      .some((p) => p.attachmentFileId === requestedFileId);
+    const isFullBookAttachment = decoded.accessLevel === 'full' && book.attachmentFileId === requestedFileId;
+
+    if (!allowedPageFile && !isFullBookAttachment) {
+      res.status(403).json({ error: 'Subscription required to access this attachment.' });
+      return;
+    }
+    const filePath = getFileUploadPath(requestedFileId);
+    if (!filePath) {
+      res.status(404).json({ error: 'Attachment file not found.' });
+      return;
+    }
+    const ext = path.extname(filePath).toLowerCase();
+    const mimeByExt: Record<string, string> = {
+      '.png': 'image/png',
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.webp': 'image/webp',
+      '.gif': 'image/gif',
+      '.svg': 'image/svg+xml',
+      '.pdf': 'application/pdf',
+      '.epub': 'application/epub+zip',
+      '.txt': 'text/plain; charset=utf-8',
+      '.md': 'text/markdown; charset=utf-8',
+      '.html': 'text/html; charset=utf-8',
+      '.htm': 'text/html; charset=utf-8',
+      '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      '.doc': 'application/msword',
+    };
+    res.setHeader('Content-Type', mimeByExt[ext] || 'application/octet-stream');
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.sendFile(filePath);
   });
 
   // Reader state: progress, bookmarks, annotations
@@ -884,6 +953,64 @@ async function startServer() {
     }
   );
 
+  // Universal book file upload endpoint (accepts ALL formats: epub, txt, md, html, docx, doc, rtf, images, pdf, etc.)
+  app.post(
+    '/api/admin/books/upload-file',
+    requirePerm('books.manage'),
+    express.raw({ type: '*/*', limit: '50mb' }),
+    async (req: AuthedRequest, res) => {
+      try {
+        const buf = req.body as Buffer;
+        if (!Buffer.isBuffer(buf) || buf.length === 0) {
+          res.status(400).json({ error: 'Empty or missing file upload.' });
+          return;
+        }
+        const rawName = typeof req.headers['x-file-name'] === 'string'
+          ? decodeURIComponent(req.headers['x-file-name'])
+          : 'book-file.bin';
+        const mimeType = typeof req.headers['x-mime-type'] === 'string'
+          ? decodeURIComponent(req.headers['x-mime-type'])
+          : 'application/octet-stream';
+        const isPdf = rawName.toLowerCase().endsWith('.pdf') || buf.subarray(0, 5).toString('ascii') === '%PDF-';
+
+        if (isPdf) {
+          let pageCount = 1;
+          try {
+            const doc = await PDFDocument.load(buf, { ignoreEncryption: true });
+            pageCount = Math.max(1, doc.getPageCount());
+          } catch {
+            res.status(400).json({ error: 'Corrupted or unreadable PDF document.' });
+            return;
+          }
+          const pdfFileId = savePdfUpload(buf);
+          appendAuditLog(loadDb(), req.authUser!, 'PDF_UPLOADED', 'book', pdfFileId, `Uploaded ${rawName} (${pageCount} pages)`);
+          res.status(201).json({
+            kind: 'pdf',
+            fileId: pdfFileId,
+            pdfFileId,
+            fileName: rawName,
+            sizeBytes: buf.length,
+            mimeType: 'application/pdf',
+            pageCount,
+          });
+          return;
+        }
+
+        const fileId = saveFileUpload(buf, rawName);
+        appendAuditLog(loadDb(), req.authUser!, 'BOOK_FILE_UPLOADED', 'book', fileId, `Uploaded ${rawName} (${buf.length} bytes)`);
+        res.status(201).json({
+          kind: 'attachment',
+          fileId,
+          fileName: rawName,
+          sizeBytes: buf.length,
+          mimeType,
+        });
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : 'File upload failed.' });
+      }
+    }
+  );
+
   app.post('/api/admin/books', requirePerm('books.manage'), (req: AuthedRequest, res) => {
     const db = loadDb();
     const payload = req.body as Partial<Book>;
@@ -926,6 +1053,10 @@ async function startServer() {
       pdfFileId: payload.pdfFileId || undefined,
       pdfFileName: payload.pdfFileName || undefined,
       pdfFileSizeBytes: typeof payload.pdfFileSizeBytes === 'number' ? payload.pdfFileSizeBytes : undefined,
+      attachmentFileId: payload.attachmentFileId || undefined,
+      attachmentFileName: payload.attachmentFileName || undefined,
+      attachmentSizeBytes: typeof payload.attachmentSizeBytes === 'number' ? payload.attachmentSizeBytes : undefined,
+      attachmentMimeType: payload.attachmentMimeType || undefined,
       license: payload.license || {
         rightsHolder: '',
         licenseType: 'publisher_direct',
@@ -982,6 +1113,13 @@ async function startServer() {
       pdfFileName: patch.pdfFileName === null ? undefined : patch.pdfFileName ?? existing.pdfFileName,
       pdfFileSizeBytes:
         patch.pdfFileSizeBytes === null ? undefined : patch.pdfFileSizeBytes ?? existing.pdfFileSizeBytes,
+      attachmentFileId: patch.attachmentFileId === null ? undefined : patch.attachmentFileId ?? existing.attachmentFileId,
+      attachmentFileName:
+        patch.attachmentFileName === null ? undefined : patch.attachmentFileName ?? existing.attachmentFileName,
+      attachmentSizeBytes:
+        patch.attachmentSizeBytes === null ? undefined : patch.attachmentSizeBytes ?? existing.attachmentSizeBytes,
+      attachmentMimeType:
+        patch.attachmentMimeType === null ? undefined : patch.attachmentMimeType ?? existing.attachmentMimeType,
       license: patch.license ? { ...existing.license, ...patch.license } : existing.license,
       updatedAt: now,
     };

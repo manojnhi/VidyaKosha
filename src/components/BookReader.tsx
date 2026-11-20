@@ -31,7 +31,7 @@ import { useApp } from '../context/AppContext';
 import { splitPageIntoAudioSegments } from '../shared/audioUtils';
 import { resolveEditionSwitch } from '../shared/domainLogic';
 import type { Annotation, BookPage, Bookmark, PenStroke } from '../shared/types';
-import { apiFetch, type EnrichedBook } from '../utils/api';
+import { apiFetch, resolveApiUrl, type EnrichedBook } from '../utils/api';
 import { AudioPlayerBar } from './AudioPlayerBar';
 import { PdfPageCanvas } from './PdfPageCanvas';
 
@@ -45,6 +45,8 @@ interface LoadedBookContent {
   pages: BookPage[];
   hasPdf?: boolean;
   pdfUrl?: string;
+  attachmentUrl?: string;
+  attachmentFileName?: string;
   licensePermissions: {
     allowOfflineDownload: boolean;
     allowPrinting: boolean;
@@ -564,6 +566,17 @@ export const BookReader: React.FC = () => {
               theme={theme}
             />
           </div>
+        ) : page.imageUrl ? (
+          <div className="mt-4 flex flex-col items-center">
+            <img
+              src={resolveApiUrl(page.imageUrl)}
+              alt={page.heading || `Page ${page.pageNumber}`}
+              className="max-h-[76vh] w-auto max-w-full rounded-lg border border-current/10 object-contain shadow-sm"
+            />
+            {page.heading && (
+              <p className="mt-3 text-xs font-medium opacity-75">{page.heading}</p>
+            )}
+          </div>
         ) : (
           <>
             <h2
@@ -644,6 +657,21 @@ export const BookReader: React.FC = () => {
             {page.diagramLabel && (
               <div className="mt-5 rounded-lg border border-dashed border-current/25 p-4 text-center text-xs opacity-80">
                 [Curriculum Figure: {page.diagramLabel}]
+              </div>
+            )}
+            {content?.attachmentUrl && page.pageNumber === 1 && (
+              <div className="mt-5 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-current/15 bg-current/[0.03] px-4 py-3 text-xs">
+                <span className="opacity-80">
+                  Original File: <strong>{content.attachmentFileName || 'Attached Book'}</strong>
+                </span>
+                <a
+                  href={resolveApiUrl(content.attachmentUrl)}
+                  download={content.attachmentFileName || 'book'}
+                  className="inline-flex items-center gap-1.5 rounded-md bg-blue-900 px-3 py-1.5 font-medium text-white hover:bg-blue-800"
+                >
+                  <Download className="h-3.5 w-3.5" aria-hidden="true" />
+                  <span>Open / Download File</span>
+                </a>
               </div>
             )}
           </>

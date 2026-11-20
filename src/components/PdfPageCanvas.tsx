@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import * as pdfjsLib from 'pdfjs-dist';
+import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
 import type { PDFDocumentLoadingTask, PDFDocumentProxy, RenderTask } from 'pdfjs-dist';
 import { Loader2 } from 'lucide-react';
 import { resolveApiUrl } from '../utils/api';

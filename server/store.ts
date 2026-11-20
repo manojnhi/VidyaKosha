@@ -29,6 +29,21 @@ export function getPdfUploadPath(fileId?: string): string | null {
   return fs.existsSync(target) ? target : null;
 }
 
+export function saveFileUpload(buffer: Buffer, originalName = 'book.bin'): string {
+  const rawExt = path.extname(originalName).toLowerCase().replace(/[^.a-z0-9]/g, '');
+  const safeExt = rawExt.length >= 2 && rawExt.length <= 10 ? rawExt : '.bin';
+  const fileId = `file-${crypto.randomUUID().slice(0, 12)}${safeExt}`;
+  const target = path.join(getUploadsDir(), fileId);
+  fs.writeFileSync(target, buffer);
+  return fileId;
+}
+
+export function getFileUploadPath(fileId?: string): string | null {
+  if (!fileId || !/^[a-zA-Z0-9_-]+\.[a-z0-9]{1,10}$/.test(fileId)) return null;
+  const target = path.join(getUploadsDir(), fileId);
+  return fs.existsSync(target) ? target : null;
+}
+
 let dbCache: DatabaseSchema | null = null;
 
 export function loadDb(): DatabaseSchema {
