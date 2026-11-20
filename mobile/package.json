@@ -1,0 +1,13 @@
+{
+  "name": "vidyakosha-mobile",
+  "private": true,
+  "version": "1.0.0",
+  "description": "VidyaKosha Digital Library Android Capacitor Wrapper",
+  "dependencies": {
+    "@capacitor/core": "^6.2.0"
+  },
+  "devDependencies": {
+    "@capacitor/android": "^6.2.0",
+    "@capacitor/cli": "^6.2.0"
+  }
+}

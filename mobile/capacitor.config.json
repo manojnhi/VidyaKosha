@@ -1,0 +1,11 @@
+{
+  "appId": "com.vidyakosha.library",
+  "appName": "VidyaKosha",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "https"
+  },
+  "android": {
+    "allowMixedContent": true
+  }
+}

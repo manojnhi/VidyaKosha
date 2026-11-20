@@ -1,0 +1,6 @@
+{
+  "name": "VidyaKosha Digital Library",
+  "description": "Multilingual K-12 digital book platform with role-based admin controls, licensed textbook editions, interactive reader, and offline PWA support.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

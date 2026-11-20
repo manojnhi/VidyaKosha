@@ -1,0 +1,55 @@
+{
+  "name": "vidyakosha-desktop",
+  "private": true,
+  "version": "1.0.0",
+  "description": "VidyaKosha Digital Library Desktop Application",
+  "author": "VidyaKosha Digital Library",
+  "license": "Apache-2.0",
+  "main": "main.cjs",
+  "scripts": {
+    "dist:win": "electron-builder --win nsis portable --publish never"
+  },
+  "devDependencies": {
+    "electron": "^33.3.1",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.vidyakosha.library",
+    "productName": "VidyaKosha",
+    "asar": false,
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.cjs",
+      "app/**/*",
+      "build/**/*"
+    ],
+    "win": {
+      "icon": "build/icon.png",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "VidyaKosha-Setup-${version}.exe"
+    },
+    "portable": {
+      "artifactName": "VidyaKosha-Portable-${version}.exe"
+    }
+  }
+}
