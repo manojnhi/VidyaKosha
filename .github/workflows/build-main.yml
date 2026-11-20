@@ -127,13 +127,20 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - name: Setup Android SDK & accept licenses
-        uses: android-actions/setup-android@v3
-
-      - name: Install Android 34 platform & build-tools
+      - name: Verify Android SDK & accept licenses
         run: |
-          yes | sdkmanager --licenses > /dev/null || true
-          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+          SDK_DIR="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          echo "ANDROID_HOME=$SDK_DIR" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_DIR" >> "$GITHUB_ENV"
+          SDKMGR="$(command -v sdkmanager || find "$SDK_DIR/cmdline-tools" -name sdkmanager -type f 2>/dev/null | head -n 1 || true)"
+          echo "Using sdkmanager: $SDKMGR"
+          if [ -n "$SDKMGR" ]; then
+            (yes || true) | "$SDKMGR" --licenses > /dev/null 2>&1 || true
+            if [ ! -d "$SDK_DIR/platforms/android-34" ]; then
+              "$SDKMGR" "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+            fi
+          fi
+          ls -la "$SDK_DIR/platforms" || true
 
       - name: Install root dependencies & build web bundle for Capacitor
         env:
@@ -153,7 +160,7 @@ jobs:
           npm install --no-audit --no-fund
           CI=true npx cap add android
           CI=true npx cap sync android
-          echo "sdk.dir=${ANDROID_HOME:-$ANDROID_SDK_ROOT}" > android/local.properties
+          echo "sdk.dir=$ANDROID_HOME" > android/local.properties
           cd android
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon --stacktrace
@@ -170,16 +177,19 @@ jobs:
 
   package-combined-installers:
     needs: [verify-web-and-server, build-windows-exe, build-android-apk]
+    if: always() && (needs.build-windows-exe.result == 'success' || needs.build-android-apk.result == 'success')
     runs-on: ubuntu-latest
 
     steps:
       - name: Download Windows .exe installers
+        continue-on-error: true
         uses: actions/download-artifact@v4
         with:
           name: vidyakosha-windows-exe
           path: combined-installers
 
       - name: Download Android .apk installer
+        continue-on-error: true
         uses: actions/download-artifact@v4
         with:
           name: vidyakosha-android-apk
