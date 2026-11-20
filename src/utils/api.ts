@@ -144,13 +144,17 @@ export function isCapacitorNative(): boolean {
   return Boolean(cap && typeof cap.isNativePlatform === 'function' && cap.isNativePlatform());
 }
 
+export function resolveApiUrl(url: string): string {
+  return API_BASE && url.startsWith('/') ? `${API_BASE}${url}` : url;
+}
+
 export async function apiFetch<T>(url: string, options: RequestInit = {}): Promise<T> {
   const token = getStoredToken();
   if (!API_BASE && isCapacitorNative() && url.startsWith('/api/')) {
     return handleNativeLocalApi<T>(url, options, token);
   }
 
-  const targetUrl = API_BASE && url.startsWith('/') ? `${API_BASE}${url}` : url;
+  const targetUrl = resolveApiUrl(url);
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...(options.headers as Record<string, string> | undefined),

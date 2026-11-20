@@ -90,6 +90,16 @@ const DEFAULT_DEMO_LOGIN_PASSWORDS: Record<string, string> = {
 };
 
 let memoryFallbackStore: NativeDb | null = null;
+const nativePdfBlobs = new Map<string, Uint8Array>();
+
+export function storeNativePdfBytes(fileId: string, bytes: Uint8Array): void {
+  nativePdfBlobs.set(fileId, bytes);
+}
+
+export function getNativePdfBytes(fileId?: string): Uint8Array | null {
+  if (!fileId) return null;
+  return nativePdfBlobs.get(fileId) || null;
+}
 
 function uid(prefix: string): string {
   const rand =
@@ -433,12 +443,15 @@ export async function handleNativeLocalApi<T>(
     saveNativeDb(db);
     const pages =
       access.accessLevel === 'full' ? book.pages : book.pages.slice(0, Math.max(1, access.allowedPages));
+    const hasPdf = Boolean(book.pdfFileId && nativePdfBlobs.has(book.pdfFileId));
     return {
       bookId: book.id,
       accessLevel: access.accessLevel,
       totalPages: book.totalPages,
       allowedPages: pages.length,
       pages,
+      hasPdf,
+      pdfUrl: hasPdf ? `native-pdf://${book.pdfFileId}` : undefined,
       licensePermissions: {
         allowOfflineDownload: access.accessLevel === 'full' && book.license.allowOfflineDownload,
         allowPrinting: access.accessLevel === 'full' && book.license.allowPrinting,
@@ -727,10 +740,16 @@ export async function handleNativeLocalApi<T>(
     const actor = requirePermission('books.manage');
     const payload = body as Partial<Book>;
     const now = new Date().toISOString();
+    const requestedTotal = Math.max(1, Number(payload.totalPages || 1));
     const pages =
       Array.isArray(payload.pages) && payload.pages.length > 0
         ? payload.pages
-        : [{ pageNumber: 1, chapterTitle: 'Chapter 1', heading: payload.title || 'Introduction', body: payload.description || '' }];
+        : Array.from({ length: payload.pdfFileId ? requestedTotal : 1 }, (_, idx) => ({
+            pageNumber: idx + 1,
+            chapterTitle: `Page ${idx + 1}`,
+            heading: idx === 0 ? payload.title || 'Introduction' : `Page ${idx + 1}`,
+            body: idx === 0 ? payload.description || '' : `PDF Page ${idx + 1}`,
+          }));
     const draftBook: Book = {
       id: uid('bk'),
       editionGroupId: payload.editionGroupId || uid('grp'),
@@ -743,7 +762,7 @@ export async function handleNativeLocalApi<T>(
       isbn: String(payload.isbn || `978-93-${Math.floor(100000 + Math.random() * 899999)}`),
       description: String(payload.description || '').trim(),
       coverUrl: payload.coverUrl || '/src/assets/images/cover_mathematics_1795146975787.jpg',
-      format: payload.format || 'reflowable',
+      format: payload.pdfFileId ? 'pdf' : payload.format || 'reflowable',
       classId: payload.classId || 'cls-10',
       boardId: payload.boardId || 'brd-cbse',
       subjectId: payload.subjectId || 'sub-math',
@@ -755,6 +774,9 @@ export async function handleNativeLocalApi<T>(
       previewPagesCount: Math.max(1, Number(payload.previewPagesCount || 2)),
       totalPages: pages.length,
       pages,
+      pdfFileId: payload.pdfFileId || undefined,
+      pdfFileName: payload.pdfFileName || undefined,
+      pdfFileSizeBytes: typeof payload.pdfFileSizeBytes === 'number' ? payload.pdfFileSizeBytes : undefined,
       license: payload.license || {
         rightsHolder: '',
         licenseType: 'publisher_direct',
@@ -795,6 +817,10 @@ export async function handleNativeLocalApi<T>(
       ...patch,
       id: existing.id,
       pages: Array.isArray(patch.pages) && patch.pages.length > 0 ? patch.pages : existing.pages,
+      pdfFileId: patch.pdfFileId === null ? undefined : patch.pdfFileId ?? existing.pdfFileId,
+      pdfFileName: patch.pdfFileName === null ? undefined : patch.pdfFileName ?? existing.pdfFileName,
+      pdfFileSizeBytes:
+        patch.pdfFileSizeBytes === null ? undefined : patch.pdfFileSizeBytes ?? existing.pdfFileSizeBytes,
       license: patch.license ? { ...existing.license, ...patch.license } : existing.license,
       updatedAt: new Date().toISOString(),
     };

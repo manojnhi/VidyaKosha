@@ -307,3 +307,77 @@ test('handleNativeLocalApi serves full catalog, auth role switch, reader content
   assert.equal(bmRes.bookmark.pageNumber, 2);
 });
 
+test('pdf-lib preview slicing and nativeLocalApi PDF book workflow work end-to-end', async () => {
+  const { PDFDocument } = await import('pdf-lib');
+  const { storeNativePdfBytes } = await import('../utils/nativeLocalApi');
+
+  resetNativeLocalDb();
+
+  // Build a real 3-page PDF and slice to 1 preview page
+  const doc = await PDFDocument.create();
+  doc.addPage([400, 500]).drawText('Page 1');
+  doc.addPage([400, 500]).drawText('Page 2');
+  doc.addPage([400, 500]).drawText('Page 3');
+  const pdfBytes = await doc.save();
+  assert.equal(Buffer.from(pdfBytes).subarray(0, 5).toString('ascii'), '%PDF-');
+
+  const sliced = await PDFDocument.create();
+  const [firstPage] = await sliced.copyPages(doc, [0]);
+  sliced.addPage(firstPage);
+  const slicedDoc = await PDFDocument.load(await sliced.save());
+  assert.equal(slicedDoc.getPageCount(), 1);
+
+  storeNativePdfBytes('pdf-test-3p', pdfBytes);
+
+  const adminSwitch = await handleNativeLocalApi<{ token: string }>(
+    '/api/auth/demo-switch',
+    { method: 'POST', body: JSON.stringify({ role: 'super_admin' }) }
+  );
+
+  const created = await handleNativeLocalApi<{ book: { id: string; format: string; totalPages: number } }>(
+    '/api/admin/books',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        title: 'Uploaded Sample PDF Textbook',
+        author: 'Test Author',
+        isbn: '978-93-99999-01-1',
+        status: 'published',
+        isFree: true,
+        totalPages: 3,
+        pdfFileId: 'pdf-test-3p',
+        pdfFileName: 'sample.pdf',
+        pdfFileSizeBytes: pdfBytes.byteLength,
+        license: {
+          rightsHolder: 'VidyaKosha Press',
+          licenseType: 'publisher_direct',
+          licenseNumber: 'LIC-PDF-001',
+          distributionPermissionGranted: true,
+          validFrom: '2026-01-01T00:00:00.000Z',
+          validUntil: '2028-12-31T00:00:00.000Z',
+          allowOfflineDownload: true,
+          allowPrinting: false,
+          territoryCountries: ['IN'],
+        },
+      }),
+    },
+    adminSwitch.token
+  );
+  assert.equal(created.book.format, 'pdf');
+  assert.equal(created.book.totalPages, 3);
+
+  const tokenRes = await handleNativeLocalApi<{ accessToken: string }>(
+    `/api/books/${created.book.id}/access-token`,
+    { method: 'POST' },
+    adminSwitch.token
+  );
+  const contentRes = await handleNativeLocalApi<{ hasPdf: boolean; pdfUrl?: string; pages: unknown[] }>(
+    `/api/books/${created.book.id}/content?token=${encodeURIComponent(tokenRes.accessToken)}`,
+    {},
+    adminSwitch.token
+  );
+  assert.equal(contentRes.hasPdf, true);
+  assert.equal(contentRes.pdfUrl, 'native-pdf://pdf-test-3p');
+  assert.equal(contentRes.pages.length, 3);
+});
+

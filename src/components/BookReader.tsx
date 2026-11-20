@@ -33,6 +33,7 @@ import { resolveEditionSwitch } from '../shared/domainLogic';
 import type { Annotation, BookPage, Bookmark, PenStroke } from '../shared/types';
 import { apiFetch, type EnrichedBook } from '../utils/api';
 import { AudioPlayerBar } from './AudioPlayerBar';
+import { PdfPageCanvas } from './PdfPageCanvas';
 
 type ReaderTheme = 'light' | 'sepia' | 'dark';
 type ReaderTool = 'read' | 'highlight' | 'underline' | 'pen' | 'note' | 'eraser';
@@ -42,6 +43,8 @@ interface LoadedBookContent {
   totalPages: number;
   allowedPages: number;
   pages: BookPage[];
+  hasPdf?: boolean;
+  pdfUrl?: string;
   licensePermissions: {
     allowOfflineDownload: boolean;
     allowPrinting: boolean;
@@ -537,7 +540,7 @@ export const BookReader: React.FC = () => {
 
     return (
       <div
-        key={page.pageNumber}
+        key={isPrimary ? 'reader-card-primary' : 'reader-card-secondary'}
         className={`relative rounded-xl border p-6 sm:p-10 shadow-sm transition-colors ${pageSurfaceClasses[theme]}`}
         style={{
           width: fitMode === 'width' ? '100%' : `${Math.round(7.4 * zoom)}px`,
@@ -551,85 +554,99 @@ export const BookReader: React.FC = () => {
           </span>
         </div>
 
-        <h2
-          className={`mt-5 font-display text-xl font-bold sm:text-2xl ${
-            headingAudioSegment && activeAudioSegmentIndex === headingAudioSegment.index
-              ? 'rounded-md bg-blue-500/15 px-2 py-1'
-              : ''
-          }`}
-        >
-          {page.heading}
-        </h2>
-
-        <div
-          className="font-book mt-4 whitespace-pre-line"
-          style={{
-            fontSize: `${Math.round((fontSize * zoom) / 100)}px`,
-            lineHeight: lineSpacing,
-          }}
-        >
-          {audioOpen && isPrimary && bodyAudioSegments.length > 0 ? (
-            <span className="space-x-1">
-              {bodyAudioSegments.map((seg) => {
-                const isActive = activeAudioSegmentIndex === seg.index;
-                return (
-                  <span
-                    key={seg.index}
-                    onClick={() => setAudioJumpRequest({ index: seg.index, nonce: Date.now() })}
-                    title="Click to listen from this line"
-                    className={`cursor-pointer rounded transition-colors ${
-                      isActive
-                        ? theme === 'dark'
-                          ? 'bg-blue-500/35 px-1 text-white ring-1 ring-blue-400'
-                          : 'bg-blue-100 px-1 text-slate-950 ring-1 ring-blue-300'
-                        : 'hover:bg-current/5'
-                    }`}
-                  >
-                    {renderPageTextWithMarks(seg.text)}{' '}
-                  </span>
-                );
-              })}
-            </span>
-          ) : (
-            renderPageTextWithMarks(page.body)
-          )}
-        </div>
-
-        {page.keyPoints && page.keyPoints.length > 0 && (
-          <div className="mt-6 rounded-lg border border-current/15 bg-current/[0.03] p-4">
-            <p className="text-xs font-semibold uppercase tracking-wider opacity-75">Key Takeaways</p>
-            <ul className="mt-2 list-disc space-y-1 pl-5 text-sm">
-              {page.keyPoints.map((kp, i) => {
-                const kpSeg = keyPointAudioSegments[i];
-                const isActive = kpSeg && activeAudioSegmentIndex === kpSeg.index;
-                return (
-                  <li
-                    key={i}
-                    onClick={() => {
-                      if (kpSeg) setAudioJumpRequest({ index: kpSeg.index, nonce: Date.now() });
-                    }}
-                    className={
-                      isActive
-                        ? theme === 'dark'
-                          ? 'rounded bg-blue-500/30 px-1.5 py-0.5 text-white'
-                          : 'rounded bg-blue-100 px-1.5 py-0.5 text-slate-950'
-                        : kpSeg
-                          ? 'cursor-pointer hover:bg-current/5 rounded px-1'
-                          : ''
-                    }
-                  >
-                    {kp}
-                  </li>
-                );
-              })}
-            </ul>
+        {content?.hasPdf && content?.pdfUrl ? (
+          <div className="mt-4">
+            <PdfPageCanvas
+              pdfUrl={content.pdfUrl}
+              pageNumber={page.pageNumber}
+              zoom={zoom}
+              fitMode={fitMode}
+              theme={theme}
+            />
           </div>
-        )}
+        ) : (
+          <>
+            <h2
+              className={`mt-5 font-display text-xl font-bold sm:text-2xl ${
+                headingAudioSegment && activeAudioSegmentIndex === headingAudioSegment.index
+                  ? 'rounded-md bg-blue-500/15 px-2 py-1'
+                  : ''
+              }`}
+            >
+              {page.heading}
+            </h2>
 
-        {page.diagramLabel && (
-          <div className="mt-5 rounded-lg border border-dashed border-current/25 p-4 text-center text-xs opacity-80">
-            [Curriculum Figure: {page.diagramLabel}]
-          </div>
+            <div
+              className="font-book mt-4 whitespace-pre-line"
+              style={{
+                fontSize: `${Math.round((fontSize * zoom) / 100)}px`,
+                lineHeight: lineSpacing,
+              }}
+            >
+              {audioOpen && isPrimary && bodyAudioSegments.length > 0 ? (
+                <span className="space-x-1">
+                  {bodyAudioSegments.map((seg) => {
+                    const isActive = activeAudioSegmentIndex === seg.index;
+                    return (
+                      <span
+                        key={seg.index}
+                        onClick={() => setAudioJumpRequest({ index: seg.index, nonce: Date.now() })}
+                        title="Click to listen from this line"
+                        className={`cursor-pointer rounded transition-colors ${
+                          isActive
+                            ? theme === 'dark'
+                              ? 'bg-blue-500/35 px-1 text-white ring-1 ring-blue-400'
+                              : 'bg-blue-100 px-1 text-slate-950 ring-1 ring-blue-300'
+                            : 'hover:bg-current/5'
+                        }`}
+                      >
+                        {renderPageTextWithMarks(seg.text)}{' '}
+                      </span>
+                    );
+                  })}
+                </span>
+              ) : (
+                renderPageTextWithMarks(page.body)
+              )}
+            </div>
+
+            {page.keyPoints && page.keyPoints.length > 0 && (
+              <div className="mt-6 rounded-lg border border-current/15 bg-current/[0.03] p-4">
+                <p className="text-xs font-semibold uppercase tracking-wider opacity-75">Key Takeaways</p>
+                <ul className="mt-2 list-disc space-y-1 pl-5 text-sm">
+                  {page.keyPoints.map((kp, i) => {
+                    const kpSeg = keyPointAudioSegments[i];
+                    const isActive = kpSeg && activeAudioSegmentIndex === kpSeg.index;
+                    return (
+                      <li
+                        key={i}
+                        onClick={() => {
+                          if (kpSeg) setAudioJumpRequest({ index: kpSeg.index, nonce: Date.now() });
+                        }}
+                        className={
+                          isActive
+                            ? theme === 'dark'
+                              ? 'rounded bg-blue-500/30 px-1.5 py-0.5 text-white'
+                              : 'rounded bg-blue-100 px-1.5 py-0.5 text-slate-950'
+                            : kpSeg
+                              ? 'cursor-pointer hover:bg-current/5 rounded px-1'
+                              : ''
+                        }
+                      >
+                        {kp}
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            )}
+
+            {page.diagramLabel && (
+              <div className="mt-5 rounded-lg border border-dashed border-current/25 p-4 text-center text-xs opacity-80">
+                [Curriculum Figure: {page.diagramLabel}]
+              </div>
+            )}
+          </>
         )}
 
         {isPrimary && (

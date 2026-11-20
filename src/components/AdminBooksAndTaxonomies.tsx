@@ -3,15 +3,18 @@ import {
   AlertTriangle,
   CheckCircle2,
   Eye,
+  FileText,
   FileUp,
   Link2,
+  Loader2,
   Plus,
   ShieldCheck,
   Trash2,
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
-import type { Book, BulkImportJob } from '../shared/types';
+import type { Book, BookPage, BulkImportJob } from '../shared/types';
 import { apiFetch, type EnrichedBook } from '../utils/api';
+import { formatFileSize, inspectPdfFile, uploadPdfFile } from '../utils/pdfUtils';
 
 export const AdminBooksSection: React.FC<{
   allBooks: EnrichedBook[];
@@ -44,6 +47,14 @@ export const AdminBooksSection: React.FC<{
   const [previewPages, setPreviewPages] = useState('2');
   const [sampleHeading, setSampleHeading] = useState('Chapter 1: Introduction');
   const [sampleBody, setSampleBody] = useState('Authorized digital curriculum textbook content.');
+
+  // PDF upload state
+  const [pdfFileId, setPdfFileId] = useState<string | undefined>(undefined);
+  const [pdfFileName, setPdfFileName] = useState<string | undefined>(undefined);
+  const [pdfFileSizeBytes, setPdfFileSizeBytes] = useState<number | undefined>(undefined);
+  const [pdfPageCount, setPdfPageCount] = useState<number | undefined>(undefined);
+  const [pdfPages, setPdfPages] = useState<BookPage[] | null>(null);
+  const [pdfUploading, setPdfUploading] = useState(false);
 
   // Mandatory Licensing & Rights fields
   const [rightsHolder, setRightsHolder] = useState('');
@@ -89,10 +100,16 @@ export const AdminBooksSection: React.FC<{
     setAuthor('');
     setPublisher('');
     setIsbn('');
+    setFormat('reflowable');
     setStatus('draft');
     setDistributionGranted(false);
     setRightsHolder('');
     setLicenseNumber('');
+    setPdfFileId(undefined);
+    setPdfFileName(undefined);
+    setPdfFileSizeBytes(undefined);
+    setPdfPageCount(undefined);
+    setPdfPages(null);
     setError(null);
     setShowModal(true);
   };
@@ -113,6 +130,11 @@ export const AdminBooksSection: React.FC<{
     setIsFree(b.isFree);
     setPrice(String(b.price));
     setPreviewPages(String(b.previewPagesCount));
+    setPdfFileId(b.pdfFileId);
+    setPdfFileName(b.pdfFileName);
+    setPdfFileSizeBytes(b.pdfFileSizeBytes);
+    setPdfPageCount(b.pdfFileId ? b.totalPages : undefined);
+    setPdfPages(null);
     setRightsHolder(b.license.rightsHolder);
     setLicenseType(b.license.licenseType);
     setLicenseNumber(b.license.licenseNumber);
@@ -124,9 +146,54 @@ export const AdminBooksSection: React.FC<{
     setShowModal(true);
   };
 
+  const handlePdfSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setError(null);
+    if (!file.name.toLowerCase().endsWith('.pdf') && file.type !== 'application/pdf') {
+      setError('Please select a valid .pdf file.');
+      return;
+    }
+    if (file.size > 50 * 1024 * 1024) {
+      setError('PDF size must be 50 MB or smaller.');
+      return;
+    }
+    setPdfUploading(true);
+    try {
+      const inspected = await inspectPdfFile(file);
+      const uploaded = await uploadPdfFile(file, inspected.pageCount);
+      setPdfFileId(uploaded.pdfFileId);
+      setPdfFileName(uploaded.fileName);
+      setPdfFileSizeBytes(uploaded.sizeBytes);
+      setPdfPageCount(uploaded.pageCount);
+      setPdfPages(inspected.pages);
+      setFormat('pdf');
+      if (!title.trim() && inspected.suggestedTitle) {
+        setTitle(inspected.suggestedTitle);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to upload PDF.');
+    } finally {
+      setPdfUploading(false);
+    }
+  };
+
   const handleSaveBook = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+    const resolvedPages = pdfPages
+      ? pdfPages
+      : editingId
+        ? undefined
+        : [
+            {
+              pageNumber: 1,
+              chapterTitle: 'Chapter 1',
+              heading: sampleHeading,
+              body: sampleBody,
+            },
+          ];
+
     const payload = {
       title,
       subtitle,
@@ -137,21 +204,16 @@ export const AdminBooksSection: React.FC<{
       boardId,
       subjectId,
       contentLanguageCode: contentLang,
-      format,
+      format: pdfFileId ? 'pdf' : format,
       status,
       isFree,
       price: Number(price || 0),
       previewPagesCount: Number(previewPages || 2),
-      pages: editingId
-        ? undefined
-        : [
-            {
-              pageNumber: 1,
-              chapterTitle: 'Chapter 1',
-              heading: sampleHeading,
-              body: sampleBody,
-            },
-          ],
+      totalPages: pdfPageCount,
+      pages: resolvedPages,
+      pdfFileId: pdfFileId ?? null,
+      pdfFileName: pdfFileName ?? null,
+      pdfFileSizeBytes: pdfFileSizeBytes ?? null,
       license: {
         rightsHolder,
         licenseType,
@@ -330,7 +392,13 @@ export const AdminBooksSection: React.FC<{
                   </p>
                 </td>
                 <td className="px-4 py-3 uppercase text-slate-700">
-                  {b.contentLanguageCode} · {b.format}
+                  <span>{b.contentLanguageCode} · {b.format}</span>
+                  {b.pdfFileId && (
+                    <span className="ml-1.5 inline-flex items-center gap-0.5 rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-semibold normal-case text-blue-800">
+                      <FileText className="h-2.5 w-2.5" />
+                      {b.totalPages}p PDF
+                    </span>
+                  )}
                 </td>
                 <td className="px-4 py-3">
                   {b.license.distributionPermissionGranted ? (
@@ -479,9 +547,64 @@ export const AdminBooksSection: React.FC<{
                 <span>Free open-access textbook</span>
               </label>
 
-              {!editingId && (
+              {/* PDF File Upload Section */}
+              <div className="rounded-lg border border-blue-200 bg-blue-50/60 p-3.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <p className="font-semibold text-slate-900">Upload Book PDF (.pdf, up to 50 MB)</p>
+                    <p className="text-[11px] text-slate-600">
+                      Automatically detects total pages, extracts text for Search &amp; Audiobook, and streams securely.
+                    </p>
+                  </div>
+                  <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-blue-900 px-3 py-2 text-xs font-medium text-white hover:bg-blue-800">
+                    {pdfUploading ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <FileUp className="h-3.5 w-3.5" />
+                    )}
+                    <span>{pdfUploading ? 'Uploading PDF...' : pdfFileId ? 'Replace PDF' : 'Choose PDF File'}</span>
+                    <input
+                      type="file"
+                      accept=".pdf,application/pdf"
+                      disabled={pdfUploading}
+                      onChange={handlePdfSelect}
+                      className="sr-only"
+                    />
+                  </label>
+                </div>
+
+                {pdfFileId && (
+                  <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2 rounded-md border border-emerald-200 bg-white px-3 py-2">
+                    <div className="flex items-center gap-2 text-emerald-800">
+                      <CheckCircle2 className="h-4 w-4 shrink-0" />
+                      <span className="font-medium">{pdfFileName || 'book.pdf'}</span>
+                      {pdfFileSizeBytes ? (
+                        <span className="text-slate-500">({formatFileSize(pdfFileSizeBytes)})</span>
+                      ) : null}
+                      {pdfPageCount ? (
+                        <span className="font-mono-num text-slate-600">· {pdfPageCount} pages</span>
+                      ) : null}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPdfFileId(undefined);
+                        setPdfFileName(undefined);
+                        setPdfFileSizeBytes(undefined);
+                        setPdfPageCount(undefined);
+                        setPdfPages(null);
+                      }}
+                      className="text-[11px] font-medium text-red-700 hover:underline"
+                    >
+                      Remove PDF
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {!editingId && !pdfFileId && (
                 <div className="space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
-                  <p className="font-semibold text-slate-800">Initial Chapter Content</p>
+                  <p className="font-semibold text-slate-800">Or Enter Manual Chapter Content (Optional for non-PDF)</p>
                   <input
                     value={sampleHeading}
                     onChange={(e) => setSampleHeading(e.target.value)}

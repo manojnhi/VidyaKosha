@@ -127,6 +127,9 @@ export interface Book {
   previewPagesCount: number;
   totalPages: number;
   pages: BookPage[];
+  pdfFileId?: string;
+  pdfFileName?: string;
+  pdfFileSizeBytes?: number;
   license: LicenseRecord;
   learningResources: LearningResource[];
   readCount: number;

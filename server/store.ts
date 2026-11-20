@@ -7,8 +7,27 @@ import { createSeedDatabase } from './seed';
 const DATA_DIR = process.env.VIDYAKOSHA_DATA_DIR
   ? path.resolve(process.env.VIDYAKOSHA_DATA_DIR)
   : path.resolve(process.cwd(), 'data');
+const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
 const DB_FILE = path.join(DATA_DIR, 'db.json');
 const SESSION_SECRET = process.env.SESSION_SECRET || 'vidyakosha-local-dev-signing-secret-2026';
+
+export function getUploadsDir(): string {
+  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+  return UPLOADS_DIR;
+}
+
+export function savePdfUpload(buffer: Buffer): string {
+  const fileId = `pdf-${crypto.randomUUID().slice(0, 12)}`;
+  const target = path.join(getUploadsDir(), `${fileId}.pdf`);
+  fs.writeFileSync(target, buffer);
+  return fileId;
+}
+
+export function getPdfUploadPath(fileId?: string): string | null {
+  if (!fileId || !/^[a-zA-Z0-9_-]+$/.test(fileId)) return null;
+  const target = path.join(getUploadsDir(), `${fileId}.pdf`);
+  return fs.existsSync(target) ? target : null;
+}
 
 let dbCache: DatabaseSchema | null = null;
 

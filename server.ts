@@ -21,8 +21,18 @@ import type {
   SubscriptionPlan,
   User,
 } from './src/shared/types';
+import { PDFDocument } from 'pdf-lib';
 import { hashPassword, verifyPassword } from './server/seed';
-import { appendAuditLog, loadDb, saveDb, signToken, toSafeUser, verifyToken } from './server/store';
+import {
+  appendAuditLog,
+  getPdfUploadPath,
+  loadDb,
+  saveDb,
+  savePdfUpload,
+  signToken,
+  toSafeUser,
+  verifyToken,
+} from './server/store';
 
 interface AuthedRequest extends Request {
   authUser?: User;
@@ -79,7 +89,7 @@ function requirePerm(permission: Permission) {
 
 async function startServer() {
   const app = express();
-  app.use(express.json({ limit: '5mb' }));
+  app.use(express.json({ limit: '15mb' }));
   app.use(attachAuth);
 
   // Health
@@ -378,17 +388,67 @@ async function startServer() {
     const pages =
       decoded.accessLevel === 'full' ? book.pages : book.pages.slice(0, Math.max(1, decoded.allowedPages));
 
+    const hasPdf = Boolean(book.pdfFileId && getPdfUploadPath(book.pdfFileId));
     res.json({
       bookId: book.id,
       accessLevel: decoded.accessLevel,
       totalPages: book.totalPages,
       allowedPages: pages.length,
       pages,
+      hasPdf,
+      pdfUrl: hasPdf ? `/api/books/${book.id}/pdf?token=${encodeURIComponent(token)}` : undefined,
       licensePermissions: {
         allowOfflineDownload: decoded.accessLevel === 'full' && book.license.allowOfflineDownload,
         allowPrinting: decoded.accessLevel === 'full' && book.license.allowPrinting,
       },
     });
+  });
+
+  // Stream authorized PDF (sliced strictly to previewPagesCount for preview_only access)
+  app.get('/api/books/:id/pdf', async (req: AuthedRequest, res) => {
+    const token = typeof req.query.token === 'string' ? req.query.token : '';
+    const decoded = verifyToken<{
+      bookId: string;
+      userId: string;
+      accessLevel: 'full' | 'preview_only';
+      allowedPages: number;
+    }>(token);
+    if (!decoded || decoded.bookId !== req.params.id) {
+      res.status(403).json({ error: 'Invalid or expired book access token.' });
+      return;
+    }
+    const db = loadDb();
+    const book = db.books.find((b) => b.id === req.params.id);
+    const pdfPath = book ? getPdfUploadPath(book.pdfFileId) : null;
+    if (!book || !pdfPath) {
+      res.status(404).json({ error: 'PDF file not found for this book.' });
+      return;
+    }
+
+    try {
+      const rawBytes = fs.readFileSync(pdfPath);
+      let outBytes: Buffer | Uint8Array = rawBytes;
+
+      if (decoded.accessLevel === 'preview_only') {
+        const srcDoc = await PDFDocument.load(rawBytes, { ignoreEncryption: true });
+        const maxPages = Math.max(1, Math.min(srcDoc.getPageCount(), decoded.allowedPages || book.previewPagesCount));
+        if (maxPages < srcDoc.getPageCount()) {
+          const previewDoc = await PDFDocument.create();
+          const indices = Array.from({ length: maxPages }, (_, idx) => idx);
+          const copied = await previewDoc.copyPages(srcDoc, indices);
+          copied.forEach((p) => previewDoc.addPage(p));
+          outBytes = await previewDoc.save();
+        }
+      }
+
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', 'inline');
+      res.setHeader('Cache-Control', 'private, no-store');
+      res.send(Buffer.from(outBytes));
+    } catch (err) {
+      console.error('Error serving PDF:', err);
+      res.status(500).json({ error: 'Unable to process PDF file.' });
+    }
   });
 
   // Reader state: progress, bookmarks, annotations
@@ -786,20 +846,57 @@ async function startServer() {
 
   // ================= ADMIN ENDPOINTS =================
 
+  app.post(
+    '/api/admin/books/upload-pdf',
+    requirePerm('books.manage'),
+    express.raw({ type: ['application/pdf', 'application/octet-stream'], limit: '50mb' }),
+    async (req: AuthedRequest, res) => {
+      try {
+        const buf = req.body as Buffer;
+        if (!Buffer.isBuffer(buf) || buf.length < 16) {
+          res.status(400).json({ error: 'Empty or missing PDF upload.' });
+          return;
+        }
+        if (buf.subarray(0, 5).toString('ascii') !== '%PDF-') {
+          res.status(400).json({ error: 'Invalid file format. Only valid PDF files are accepted.' });
+          return;
+        }
+        let pageCount = 1;
+        try {
+          const doc = await PDFDocument.load(buf, { ignoreEncryption: true });
+          pageCount = Math.max(1, doc.getPageCount());
+        } catch {
+          res.status(400).json({ error: 'Corrupted or unreadable PDF document.' });
+          return;
+        }
+        const pdfFileId = savePdfUpload(buf);
+        const rawName = typeof req.headers['x-file-name'] === 'string' ? decodeURIComponent(req.headers['x-file-name']) : 'textbook.pdf';
+        appendAuditLog(loadDb(), req.authUser!, 'PDF_UPLOADED', 'book', pdfFileId, `Uploaded ${rawName} (${pageCount} pages)`);
+        res.status(201).json({
+          pdfFileId,
+          fileName: rawName,
+          sizeBytes: buf.length,
+          pageCount,
+        });
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : 'PDF upload failed.' });
+      }
+    }
+  );
+
   app.post('/api/admin/books', requirePerm('books.manage'), (req: AuthedRequest, res) => {
     const db = loadDb();
     const payload = req.body as Partial<Book>;
     const now = new Date().toISOString();
+    const requestedTotal = Math.max(1, Number(payload.totalPages || 1));
     const pages = Array.isArray(payload.pages) && payload.pages.length > 0
       ? payload.pages
-      : [
-          {
-            pageNumber: 1,
-            chapterTitle: 'Chapter 1',
-            heading: payload.title || 'Introduction',
-            body: payload.description || 'Sample content page.',
-          },
-        ];
+      : Array.from({ length: payload.pdfFileId ? requestedTotal : 1 }, (_, idx) => ({
+          pageNumber: idx + 1,
+          chapterTitle: `Page ${idx + 1}`,
+          heading: idx === 0 ? payload.title || 'Introduction' : `Page ${idx + 1}`,
+          body: idx === 0 ? payload.description || 'Sample content page.' : `PDF Page ${idx + 1}`,
+        }));
 
     const draftBook: Book = {
       id: `bk-${crypto.randomUUID().slice(0, 8)}`,
@@ -813,7 +910,7 @@ async function startServer() {
       isbn: String(payload.isbn || `978-93-${Math.floor(100000 + Math.random() * 899999)}`).trim(),
       description: String(payload.description || '').trim(),
       coverUrl: payload.coverUrl || '/src/assets/images/cover_mathematics_1795146975787.jpg',
-      format: payload.format || 'reflowable',
+      format: payload.pdfFileId ? 'pdf' : payload.format || 'reflowable',
       classId: payload.classId || 'cls-10',
       boardId: payload.boardId || 'brd-cbse',
       subjectId: payload.subjectId || 'sub-math',
@@ -826,6 +923,9 @@ async function startServer() {
       previewPagesCount: Math.max(1, Number(payload.previewPagesCount || 2)),
       totalPages: pages.length,
       pages,
+      pdfFileId: payload.pdfFileId || undefined,
+      pdfFileName: payload.pdfFileName || undefined,
+      pdfFileSizeBytes: typeof payload.pdfFileSizeBytes === 'number' ? payload.pdfFileSizeBytes : undefined,
       license: payload.license || {
         rightsHolder: '',
         licenseType: 'publisher_direct',
@@ -878,6 +978,10 @@ async function startServer() {
       ...patch,
       id: existing.id,
       pages: Array.isArray(patch.pages) && patch.pages.length > 0 ? patch.pages : existing.pages,
+      pdfFileId: patch.pdfFileId === null ? undefined : patch.pdfFileId ?? existing.pdfFileId,
+      pdfFileName: patch.pdfFileName === null ? undefined : patch.pdfFileName ?? existing.pdfFileName,
+      pdfFileSizeBytes:
+        patch.pdfFileSizeBytes === null ? undefined : patch.pdfFileSizeBytes ?? existing.pdfFileSizeBytes,
       license: patch.license ? { ...existing.license, ...patch.license } : existing.license,
       updatedAt: now,
     };
