@@ -81,14 +81,6 @@ interface NativeDb {
   config: AppConfig;
 }
 
-const DEFAULT_DEMO_LOGIN_PASSWORDS: Record<string, string> = {
-  'superadmin@vidyakosha.edu': 'Admin@123',
-  'content@vidyakosha.edu': 'Manager@123',
-  'aarav@student.vidyakosha.edu': 'Student@123',
-  'parent@vidyakosha.edu': 'Parent@123',
-  'teacher@vidyakosha.edu': 'Teacher@123',
-};
-
 let memoryFallbackStore: NativeDb | null = null;
 const nativePdfBlobs = new Map<string, Uint8Array>();
 const nativeFileDataUrls = new Map<string, string>();
@@ -144,12 +136,72 @@ function createInitialNativeDb(): NativeDb {
   };
 }
 
+const LEGACY_DEMO_USER_IDS = new Set(['u-super-1', 'u-admin-1', 'u-stu-1', 'u-par-1', 'u-tch-1']);
+const LEGACY_DEMO_BOOK_IDS = new Set([
+  'bk-nursery-num-en', 'bk-math-10-hi', 'bk-math-10-en', 'bk-sci-8-en',
+  'bk-sci-8-hi', 'bk-hindi-6-hi', 'bk-phy-12-en', 'bk-evs-5-mr', 'bk-draft-eng-3',
+]);
+
+function removeLegacyDemoRecords(db: NativeDb): boolean {
+  let changed = false;
+  const filterRows = <T>(rows: T[], keep: (row: T) => boolean): T[] => {
+    const filtered = rows.filter(keep);
+    if (filtered.length !== rows.length) changed = true;
+    return filtered;
+  };
+  db.users = filterRows(db.users, (user) => !LEGACY_DEMO_USER_IDS.has(user.id));
+  db.books = filterRows(db.books, (book) => !LEGACY_DEMO_BOOK_IDS.has(book.id));
+  db.subscriptions = filterRows(db.subscriptions, (row) => row.id !== 'sub-seed-1' && !LEGACY_DEMO_USER_IDS.has(row.userId));
+  db.payments = filterRows(db.payments, (row) => !['pay-seed-1', 'pay-seed-2'].includes(row.id));
+  db.readingProgress = filterRows(db.readingProgress, (row) => !LEGACY_DEMO_USER_IDS.has(row.userId) && !LEGACY_DEMO_BOOK_IDS.has(row.bookId));
+  db.bookmarks = filterRows(db.bookmarks, (row) => row.id !== 'bm-1' && !LEGACY_DEMO_USER_IDS.has(row.userId));
+  db.annotations = filterRows(db.annotations, (row) => row.id !== 'ann-1' && !LEGACY_DEMO_USER_IDS.has(row.userId));
+  db.notifications = filterRows(db.notifications, (row) => !['not-1', 'not-2'].includes(row.id));
+  db.tickets = filterRows(db.tickets, (row) => row.id !== 'tkt-1');
+  db.auditLogs = filterRows(db.auditLogs, (row) => row.id !== 'aud-1');
+  db.bulkImportJobs = filterRows(db.bulkImportJobs, (row) => row.id !== 'blk-1');
+  db.plans = filterRows(db.plans, (row) => !['plan-class10-cbse', 'plan-all-access', 'plan-sci-8'].includes(row.id));
+  db.coupons = filterRows(db.coupons, (row) => !['cpn-1', 'cpn-2'].includes(row.id));
+  for (const user of db.users) {
+    if (user.linkedChildId && LEGACY_DEMO_USER_IDS.has(user.linkedChildId)) {
+      delete user.linkedChildId;
+      changed = true;
+    }
+    const favorites = user.favoriteBookIds.filter((bookId) => !LEGACY_DEMO_BOOK_IDS.has(bookId));
+    if (favorites.length !== user.favoriteBookIds.length) {
+      user.favoriteBookIds = favorites;
+      changed = true;
+    }
+  }
+  const providers = db.config.paymentProviders.filter((provider) => !['razorpay_in', 'stripe_global', 'paytabs_mena'].includes(provider.id));
+  if (providers.length !== db.config.paymentProviders.length) {
+    db.config.paymentProviders = providers;
+    changed = true;
+  }
+  if (['razorpay_in', 'stripe_global', 'paytabs_mena'].includes(db.config.activePaymentProvider)) {
+    db.config.activePaymentProvider = '';
+    changed = true;
+  }
+  if (db.config.legalPages.refundPolicy || db.config.legalPages.purchaseTerms || db.config.legalPages.privacyPolicy) {
+    db.config.legalPages = { refundPolicy: '', purchaseTerms: '', privacyPolicy: '' };
+    changed = true;
+  }
+  const announcements = db.config.announcements.filter((item) => item.id !== 'ann-banner-1');
+  if (announcements.length !== db.config.announcements.length) {
+    db.config.announcements = announcements;
+    changed = true;
+  }
+  return changed;
+}
+
 function loadNativeDb(): NativeDb {
   try {
     if (typeof localStorage !== 'undefined') {
       const raw = localStorage.getItem(NATIVE_DB_KEY);
       if (raw) {
-        return JSON.parse(raw) as NativeDb;
+        const db = JSON.parse(raw) as NativeDb;
+        if (removeLegacyDemoRecords(db)) saveNativeDb(db);
+        return db;
       }
       const seed = createInitialNativeDb();
       localStorage.setItem(NATIVE_DB_KEY, JSON.stringify(seed));
@@ -288,24 +340,11 @@ export async function handleNativeLocalApi<T>(
     } as T;
   }
 
-  if (method === 'POST' && pathname === '/api/auth/demo-switch') {
-    const role = String(body.role || '');
-    const targetUser = db.users.find((u) => u.role === role && u.status === 'active');
-    if (!targetUser) throw new Error('Demo user for role not found.');
-    targetUser.lastLoginAt = new Date().toISOString();
-    appendAudit(db, targetUser, 'DEMO_ROLE_SWITCH', 'user', targetUser.id, `Switched workspace to ${role}`);
-    saveNativeDb(db);
-    return { token: `native:${targetUser.id}`, user: toSafeUser(targetUser) } as T;
-  }
-
   if (method === 'POST' && pathname === '/api/auth/login') {
     const email = String(body.email || '').trim().toLowerCase();
     const password = String(body.password || '');
     const user = db.users.find((u) => u.email.toLowerCase() === email);
-    const valid =
-      user &&
-      ((user.localSecret && user.localSecret === password) ||
-        DEFAULT_DEMO_LOGIN_PASSWORDS[email] === password);
+    const valid = Boolean(user && user.localSecret && user.localSecret === password);
     if (!user || !valid) throw new Error('Invalid email or password.');
     if (user.status === 'suspended') throw new Error('Account is suspended. Contact administrator.');
     user.lastLoginAt = new Date().toISOString();
@@ -737,7 +776,7 @@ export async function handleNativeLocalApi<T>(
 
   if (method === 'GET' && pathname === '/api/parent/overview') {
     const user = requirePermission('parent.monitor');
-    const childId = user.linkedChildId || 'u-stu-1';
+    const childId = user.linkedChildId || '';
     const child = db.users.find((u) => u.id === childId);
     return {
       child: child ? toSafeUser(child) : null,
