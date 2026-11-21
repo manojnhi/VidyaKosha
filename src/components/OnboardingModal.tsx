@@ -161,7 +161,7 @@ export const OnboardingModal: React.FC = () => {
             onClick={() => handleContinue()}
             className="text-xs font-medium text-slate-600 hover:text-slate-900 underline underline-offset-4"
           >
-            {t('onboarding.skipDemo')}
+            {t('onboarding.openLibrary')}
           </button>
           <button
             type="button"
