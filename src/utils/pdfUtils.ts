@@ -127,48 +127,65 @@ const LARGE_PDF_THRESHOLD_BYTES = 50 * 1024 * 1024;
 const MAX_PDF_UPLOAD_BYTES = 500 * 1024 * 1024;
 
 async function uploadLargePdfFile(file: File): Promise<UploadedPdfMeta> {
-  const presignUrl = resolveApiUrl('/api/admin/books/upload-pdf/presign');
+  const sessionUrl = resolveApiUrl('/api/admin/books/upload-pdf/session');
   const completeUrl = resolveApiUrl('/api/admin/books/upload-pdf/complete');
   const token = getStoredToken();
-  const authHeaders = token ? { Authorization: `Bearer ${token}` } : {};
+  const authHeaders: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
 
-  const presignResponse = await fetch(presignUrl, {
+  const sessionResponse = await fetch(sessionUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders },
     body: JSON.stringify({ fileName: file.name, sizeBytes: file.size }),
   });
-  const presigned = await presignResponse.json().catch(() => ({}));
-  if (!presignResponse.ok) {
-    throw new Error(presigned?.error || `PDF upload preparation failed (${presignResponse.status}).`);
+  const session = await sessionResponse.json().catch(() => ({}));
+  if (!sessionResponse.ok) {
+    throw new Error(session?.error || `Google Drive upload preparation failed (${sessionResponse.status}).`);
   }
-  if (!presigned?.uploadUrl || !presigned?.pdfFileId) {
-    throw new Error('The cloud storage service returned an incomplete upload link.');
+  if (!session?.uploadSessionId || !Number.isSafeInteger(session?.chunkSizeBytes)) {
+    throw new Error('Google Drive did not return a valid resumable upload session.');
   }
 
-  const putResponse = await fetch(presigned.uploadUrl, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/pdf' },
-    body: file,
-  });
-  if (!putResponse.ok) {
-    throw new Error(`Cloud PDF upload failed (${putResponse.status}). Check the storage bucket CORS settings and try again.`);
+  let driveFileId = '';
+  for (let start = 0; start < file.size; start += session.chunkSizeBytes) {
+    const end = Math.min(file.size, start + session.chunkSizeBytes);
+    const chunk = file.slice(start, end);
+    const chunkResponse = await fetch(
+      resolveApiUrl(`/api/admin/books/upload-pdf/chunk/${encodeURIComponent(session.uploadSessionId)}`),
+      {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/octet-stream',
+          'Content-Range': `bytes ${start}-${end - 1}/${file.size}`,
+          ...authHeaders,
+        },
+        body: chunk,
+      }
+    );
+    const chunkResult = await chunkResponse.json().catch(() => ({}));
+    if (!chunkResponse.ok) {
+      throw new Error(chunkResult?.error || `Google Drive PDF upload failed (${chunkResponse.status}).`);
+    }
+    if (chunkResult?.complete) {
+      driveFileId = String(chunkResult.driveFileId || '');
+    } else if (Number(chunkResult?.nextOffset) !== end) {
+      throw new Error('Google Drive did not confirm the uploaded PDF chunk. Please restart the upload.');
+    }
+  }
+  if (!driveFileId) {
+    throw new Error('Google Drive did not confirm that the PDF upload finished.');
   }
 
   const completeResponse = await fetch(completeUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders },
-    body: JSON.stringify({
-      pdfFileId: presigned.pdfFileId,
-      fileName: file.name,
-      sizeBytes: file.size,
-    }),
+    body: JSON.stringify({ driveFileId, fileName: file.name, sizeBytes: file.size }),
   });
   const completed = await completeResponse.json().catch(() => ({}));
   if (!completeResponse.ok) {
-    throw new Error(completed?.error || `PDF verification failed (${completeResponse.status}).`);
+    throw new Error(completed?.error || `Google Drive PDF verification failed (${completeResponse.status}).`);
   }
   if (!completed?.readUrl) {
-    throw new Error('Cloud storage did not return a temporary PDF inspection link.');
+    throw new Error('Google Drive did not return a temporary PDF inspection URL.');
   }
   return {
     pdfFileId: completed.pdfFileId,
@@ -179,10 +196,15 @@ async function uploadLargePdfFile(file: File): Promise<UploadedPdfMeta> {
   };
 }
 
-async function inspectPdfUrl(url: string, fileName: string): Promise<InspectedPdfResult> {
+async function inspectPdfUrl(
+  url: string,
+  fileName: string,
+  httpHeaders: Record<string, string> = {}
+): Promise<InspectedPdfResult> {
   ensurePdfWorker();
   const loadingTask = pdfjsLib.getDocument({
     url,
+    httpHeaders,
     disableRange: false,
     disableStream: false,
     rangeChunkSize: 1024 * 1024,
@@ -371,13 +393,13 @@ export async function processAndUploadBookFiles(files: File[]): Promise<Uploaded
 
   // Case 2: PDF file
   if (isPdfFile(file)) {
-    const hasRemoteApi = !(isCapacitorNative() && resolveApiUrl('/api/admin/books/upload-pdf/presign') === '/api/admin/books/upload-pdf/presign');
+    const hasRemoteApi = !(isCapacitorNative() && resolveApiUrl('/api/admin/books/upload-pdf/session') === '/api/admin/books/upload-pdf/session');
     if (file.size > LARGE_PDF_THRESHOLD_BYTES) {
       if (!hasRemoteApi) {
         throw new Error('PDF files over 50 MB need the cloud-connected mobile app and configured cloud storage.');
       }
       const uploaded = await uploadLargePdfFile(file);
-      const inspected = await inspectPdfUrl(uploaded.readUrl!, file.name);
+      const inspected = await inspectPdfUrl(uploaded.readUrl!, file.name, token ? { Authorization: `Bearer ${token}` } : {});
       return {
         format: 'pdf',
         fileName: uploaded.fileName,
@@ -399,7 +421,7 @@ export async function processAndUploadBookFiles(files: File[]): Promise<Uploaded
       if (!canUseLocalFallback) throw error;
     }
     if (remoteUpload?.readUrl) {
-      const inspected = await inspectPdfUrl(remoteUpload.readUrl, file.name);
+      const inspected = await inspectPdfUrl(remoteUpload.readUrl, file.name, token ? { Authorization: `Bearer ${token}` } : {});
       return {
         format: 'pdf',
         fileName: remoteUpload.fileName,
