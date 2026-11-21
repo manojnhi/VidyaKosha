@@ -22,8 +22,7 @@ export const PlansView: React.FC = () => {
             Subscription Plans &amp; Academic Passes
           </h1>
           <p className="mt-2 max-w-2xl text-sm text-slate-600">
-            Choose a class, board, subject, or full-library annual pass. Use coupon{' '}
-            <span className="font-mono-num font-semibold text-slate-900">VIDYA20</span> at checkout for 20% off.
+            Browse the learning plans currently available in the library.
           </p>
         </div>
 
