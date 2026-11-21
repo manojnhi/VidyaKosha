@@ -144,7 +144,7 @@ jobs:
 
       - name: Install root dependencies & build web bundle for Capacitor
         env:
-          VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
+          VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL || 'https://vidyakosha-digital-library-demo.onrender.com' }}
         run: |
           if [ -f package-lock.json ]; then
             npm ci
