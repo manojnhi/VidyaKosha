@@ -24,7 +24,7 @@ export type TranslationKey =
   | 'onboarding.chooseUiLang'
   | 'onboarding.subtitle'
   | 'onboarding.continue'
-  | 'onboarding.skipDemo'
+  | 'onboarding.openLibrary'
   | 'onboarding.classLabel'
   | 'onboarding.boardLabel'
   | 'onboarding.contentLangLabel'
@@ -139,7 +139,7 @@ export const TRANSLATIONS: Record<string, Record<TranslationKey, string>> = {
     'onboarding.chooseUiLang': 'अपनी ऐप भाषा चुनें',
     'onboarding.subtitle': 'ऐप के मेनू, बटन और संदेश इस भाषा में दिखेंगे। किताब की सामग्री भाषा आप अलग से चुन सकते हैं।',
     'onboarding.continue': 'जारी रखें',
-    'onboarding.skipDemo': 'सीधे डेमो पुस्तकालय खोलें',
+    'onboarding.openLibrary': 'पुस्तकालय खोलें',
     'onboarding.classLabel': 'कक्षा चुनें',
     'onboarding.boardLabel': 'शिक्षा बोर्ड चुनें',
     'onboarding.contentLangLabel': 'किताब की पसंदीदा भाषा',
@@ -199,7 +199,7 @@ export const TRANSLATIONS: Record<string, Record<TranslationKey, string>> = {
     'reader.audioAutoPage': 'अगला पृष्ठ स्वतः',
     'reader.audioReadAlongFallback': 'ब्राउज़र में वॉइस इंजन न मिलने पर रीड-अलॉन्ग हाइलाइट मोड चल रहा है (Chrome/Android पर आवाज़ सहित चलेगा)',
     'checkout.title': 'सुरक्षित वार्षिक सब्सक्रिप्शन चेकआउट',
-    'checkout.couponPlaceholder': 'कूपन कोड (जैसे VIDYA20)',
+    'checkout.couponPlaceholder': 'कूपन कोड डालें',
     'checkout.applyCoupon': 'लागू करें',
     'checkout.subtotal': 'मूल्य',
     'checkout.discount': 'छूट',
@@ -253,7 +253,7 @@ export const TRANSLATIONS: Record<string, Record<TranslationKey, string>> = {
     'onboarding.chooseUiLang': 'Choose Your App Language',
     'onboarding.subtitle': 'Menus, buttons, and notifications appear in this language. Book content languages remain independent.',
     'onboarding.continue': 'Continue',
-    'onboarding.skipDemo': 'Open Library Directly',
+    'onboarding.openLibrary': 'Open Library',
     'onboarding.classLabel': 'Select Class',
     'onboarding.boardLabel': 'Select Education Board',
     'onboarding.contentLangLabel': 'Preferred Book Content Language',
@@ -313,7 +313,7 @@ export const TRANSLATIONS: Record<string, Record<TranslationKey, string>> = {
     'reader.audioAutoPage': 'Auto-next page',
     'reader.audioReadAlongFallback': 'Read-along highlight mode active (device speech voice unavailable in this browser)',
     'checkout.title': 'Secure Annual Subscription Checkout',
-    'checkout.couponPlaceholder': 'Coupon code (e.g. VIDYA20)',
+    'checkout.couponPlaceholder': 'Enter coupon code',
     'checkout.applyCoupon': 'Apply',
     'checkout.subtotal': 'Subtotal',
     'checkout.discount': 'Discount',
@@ -367,7 +367,7 @@ export const TRANSLATIONS: Record<string, Record<TranslationKey, string>> = {
     'onboarding.chooseUiLang': 'अॅपची भाषा निवडा',
     'onboarding.subtitle': 'मेनू आणि संदेश या भाषेत दिसतील. पुस्तकाची भाषा तुम्ही स्वतंत्रपणे निवडू शकता.',
     'onboarding.continue': 'पुढे जा',
-    'onboarding.skipDemo': 'थेट ग्रंथालय उघडा',
+    'onboarding.openLibrary': 'ग्रंथालय उघडा',
     'onboarding.classLabel': 'इयत्ता निवडा',
     'onboarding.boardLabel': 'शिक्षण मंडळ निवडा',
     'onboarding.contentLangLabel': 'पुस्तकाची पसंतीची भाषा',
@@ -427,7 +427,7 @@ export const TRANSLATIONS: Record<string, Record<TranslationKey, string>> = {
     'reader.audioAutoPage': 'पुढील पान आपोआप',
     'reader.audioReadAlongFallback': 'डिव्हाइस आवाज उपलब्ध नसल्याने रीड-अलॉन्ग हायलाइट मोड सुरू आहे',
     'checkout.title': 'सुरक्षित वार्षिक सबस्क्रिप्शन चेकआउट',
-    'checkout.couponPlaceholder': 'कूपन कोड (उदा. VIDYA20)',
+    'checkout.couponPlaceholder': 'कूपन कोड टाका',
     'checkout.applyCoupon': 'लागू करा',
     'checkout.subtotal': 'किंमत',
     'checkout.discount': 'सवलत',
