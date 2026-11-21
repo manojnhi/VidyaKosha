@@ -70,31 +70,7 @@ export const AdminBooksSection: React.FC<{
   const [allowPrint, setAllowPrint] = useState(false);
 
   // Bulk Import JSON/CSV rows
-  const [bulkJson, setBulkJson] = useState(
-    JSON.stringify(
-      [
-        {
-          title: 'Class 9 Civics & Democratic Politics',
-          isbn: '978-93-81009-09-1',
-          classId: 'cls-9',
-          boardId: 'brd-cbse',
-          subjectId: 'sub-sst',
-          contentLanguageCode: 'en',
-          rightsHolder: 'VidyaKosha Academic Press',
-          licenseNumber: 'PUB-VK-2026-901',
-          distributionPermissionGranted: true,
-        },
-        {
-          title: 'Unlicensed Sample Book (Will Flag Error)',
-          isbn: '978-93-00000-00-0',
-          rightsHolder: '',
-          licenseNumber: '',
-        },
-      ],
-      null,
-      2
-    )
-  );
+  const [bulkJson, setBulkJson] = useState('[]');
   const [bulkResult, setBulkResult] = useState<BulkImportJob | null>(null);
 
   const openNewBook = () => {
@@ -564,9 +540,9 @@ export const AdminBooksSection: React.FC<{
               <div className="rounded-lg border border-blue-200 bg-blue-50/60 p-3.5">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
-                    <p className="font-semibold text-slate-900">Upload Book File (All Formats Accepted · up to 50 MB)</p>
+                    <p className="font-semibold text-slate-900">Upload Book File · PDF up to 500 MB</p>
                     <p className="text-[11px] text-slate-600">
-                      Supports PDF, EPUB, TXT, MD, HTML, DOCX, DOC, RTF &amp; Images (JPG/PNG/WebP) — auto-prepares pages for Reader &amp; Audio.
+                      PDFs up to 500 MB use cloud storage. Other formats support up to 50 MB and are prepared for the Reader &amp; Audio.
                     </p>
                   </div>
                   <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-blue-900 px-3 py-2 text-xs font-medium text-white hover:bg-blue-800">
