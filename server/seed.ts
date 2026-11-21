@@ -36,24 +36,30 @@ export function verifyPassword(password: string, hash: string, salt: string): bo
   return crypto.timingSafeEqual(computed, stored);
 }
 
-const DEMO_PASSWORDS_BY_USER_ID: Record<string, string> = {
-  'u-super-1': 'Admin@123',
-  'u-admin-1': 'Manager@123',
-  'u-stu-1': 'Student@123',
-  'u-par-1': 'Parent@123',
-  'u-tch-1': 'Teacher@123',
-};
-
 export function createSeedDatabase(): DatabaseSchema {
-  const users: User[] = SEED_SAFE_USERS.map((safe) => {
-    const rawPassword = DEMO_PASSWORDS_BY_USER_ID[safe.id] || 'Vidya@123';
-    const { hash, salt } = hashPassword(rawPassword);
-    return {
-      ...structuredClone(safe),
+  const users: User[] = SEED_SAFE_USERS.map((safe) => ({
+    ...structuredClone(safe),
+    passwordHash: '',
+    salt: '',
+  }));
+  const initialAdminEmail = process.env.INITIAL_ADMIN_EMAIL?.trim().toLowerCase();
+  const initialAdminPassword = process.env.INITIAL_ADMIN_PASSWORD;
+  if (initialAdminEmail && initialAdminPassword && !users.some((user) => user.role === 'super_admin')) {
+    const { hash, salt } = hashPassword(initialAdminPassword);
+    users.push({
+      id: `u-${crypto.randomUUID().slice(0, 8)}`,
+      name: process.env.INITIAL_ADMIN_NAME?.trim() || 'VidyaKosha Administrator',
+      email: initialAdminEmail,
       passwordHash: hash,
       salt,
-    };
-  });
+      role: 'super_admin',
+      status: 'active',
+      uiLanguageCode: 'hi',
+      preferredContentLanguageCode: 'hi',
+      favoriteBookIds: [],
+      createdAt: new Date().toISOString(),
+    });
+  }
 
   return {
     users,
