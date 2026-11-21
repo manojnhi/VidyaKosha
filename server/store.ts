@@ -44,6 +44,93 @@ export function getFileUploadPath(fileId?: string): string | null {
   return fs.existsSync(target) ? target : null;
 }
 
+const LEGACY_DEMO_USER_IDS = new Set(['u-super-1', 'u-admin-1', 'u-stu-1', 'u-par-1', 'u-tch-1']);
+const LEGACY_DEMO_USER_EMAILS = new Set([
+  'superadmin@vidyakosha.edu',
+  'content@vidyakosha.edu',
+  'aarav@student.vidyakosha.edu',
+  'parent@vidyakosha.edu',
+  'teacher@vidyakosha.edu',
+]);
+const LEGACY_DEMO_BOOK_IDS = new Set([
+  'bk-nursery-num-en', 'bk-math-10-hi', 'bk-math-10-en', 'bk-sci-8-en',
+  'bk-sci-8-hi', 'bk-hindi-6-hi', 'bk-phy-12-en', 'bk-evs-5-mr', 'bk-draft-eng-3',
+]);
+const LEGACY_DEMO_PLAN_IDS = new Set(['plan-class10-cbse', 'plan-all-access', 'plan-sci-8']);
+
+function removeBundledDemoRecords(db: DatabaseSchema): boolean {
+  const demoUserIds = new Set(db.users.filter((user) =>
+    LEGACY_DEMO_USER_IDS.has(user.id) || LEGACY_DEMO_USER_EMAILS.has(user.email.toLowerCase())
+  ).map((user) => user.id));
+  let changed = false;
+  const filterRows = <T>(rows: T[], keep: (row: T) => boolean): T[] => {
+    const filtered = rows.filter(keep);
+    if (filtered.length !== rows.length) changed = true;
+    return filtered;
+  };
+  db.users = filterRows(db.users, (user) => !demoUserIds.has(user.id));
+  db.books = filterRows(db.books, (book) => !LEGACY_DEMO_BOOK_IDS.has(book.id));
+  db.plans = filterRows(db.plans, (plan) => !LEGACY_DEMO_PLAN_IDS.has(plan.id));
+  db.coupons = filterRows(db.coupons, (coupon) => !['cpn-1', 'cpn-2'].includes(coupon.id));
+  db.subscriptions = filterRows(db.subscriptions, (row) =>
+    row.id !== 'sub-seed-1' && !demoUserIds.has(row.userId) && !LEGACY_DEMO_PLAN_IDS.has(row.planId)
+  );
+  db.payments = filterRows(db.payments, (row) =>
+    !['pay-seed-1', 'pay-seed-2'].includes(row.id) && !demoUserIds.has(row.userId)
+  );
+  db.readingProgress = filterRows(db.readingProgress, (row) =>
+    !demoUserIds.has(row.userId) && !LEGACY_DEMO_BOOK_IDS.has(row.bookId)
+  );
+  db.bookmarks = filterRows(db.bookmarks, (row) =>
+    row.id !== 'bm-1' && !demoUserIds.has(row.userId) && !LEGACY_DEMO_BOOK_IDS.has(row.bookId)
+  );
+  db.annotations = filterRows(db.annotations, (row) =>
+    row.id !== 'ann-1' && !demoUserIds.has(row.userId) && !LEGACY_DEMO_BOOK_IDS.has(row.bookId)
+  );
+  db.notifications = filterRows(db.notifications, (row) =>
+    !['not-1', 'not-2'].includes(row.id) && (!row.userId || !demoUserIds.has(row.userId))
+  );
+  db.tickets = filterRows(db.tickets, (row) =>
+    row.id !== 'tkt-1' && !demoUserIds.has(row.userId)
+  );
+  db.auditLogs = filterRows(db.auditLogs, (row) =>
+    row.id !== 'aud-1' && !demoUserIds.has(row.actorId) && !LEGACY_DEMO_BOOK_IDS.has(row.targetId)
+  );
+  db.bulkImportJobs = filterRows(db.bulkImportJobs, (row) => row.id !== 'blk-1');
+  for (const user of db.users) {
+    if (user.linkedChildId && demoUserIds.has(user.linkedChildId)) {
+      delete user.linkedChildId;
+      changed = true;
+    }
+    const favorites = user.favoriteBookIds.filter((bookId) => !LEGACY_DEMO_BOOK_IDS.has(bookId));
+    if (favorites.length !== user.favoriteBookIds.length) {
+      user.favoriteBookIds = favorites;
+      changed = true;
+    }
+  }
+  const announcements = db.config.announcements.filter((announcement) => announcement.id !== 'ann-banner-1');
+  if (announcements.length !== db.config.announcements.length) {
+    db.config.announcements = announcements;
+    changed = true;
+  }
+  const providers = db.config.paymentProviders.filter((provider) =>
+    !['razorpay_in', 'stripe_global', 'paytabs_mena'].includes(provider.id)
+  );
+  if (providers.length !== db.config.paymentProviders.length) {
+    db.config.paymentProviders = providers;
+    changed = true;
+  }
+  if (['razorpay_in', 'stripe_global', 'paytabs_mena'].includes(db.config.activePaymentProvider)) {
+    db.config.activePaymentProvider = '';
+    changed = true;
+  }
+  if (db.config.legalPages.refundPolicy || db.config.legalPages.purchaseTerms || db.config.legalPages.privacyPolicy) {
+    db.config.legalPages = { refundPolicy: '', purchaseTerms: '', privacyPolicy: '' };
+    changed = true;
+  }
+  return changed;
+}
+
 let dbCache: DatabaseSchema | null = null;
 
 export function loadDb(): DatabaseSchema {
@@ -57,7 +144,18 @@ export function loadDb(): DatabaseSchema {
   }
   try {
     const raw = fs.readFileSync(DB_FILE, 'utf-8');
-    dbCache = JSON.parse(raw) as DatabaseSchema;
+    const db = JSON.parse(raw) as DatabaseSchema;
+    let changed = removeBundledDemoRecords(db);
+    if (!db.users.some((user) => user.role === 'super_admin') && process.env.INITIAL_ADMIN_EMAIL && process.env.INITIAL_ADMIN_PASSWORD) {
+      const bootstrapUsers = createSeedDatabase().users;
+      const initialAdmin = bootstrapUsers.find((user) => user.role === 'super_admin');
+      if (initialAdmin && !db.users.some((user) => user.email === initialAdmin.email)) {
+        db.users.push(initialAdmin);
+        changed = true;
+      }
+    }
+    if (changed) saveDb(db);
+    dbCache = db;
     return dbCache;
   } catch {
     const seed = createSeedDatabase();
