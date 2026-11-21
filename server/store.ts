@@ -3,6 +3,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { AuditLogEntry, DatabaseSchema, RoleId, SafeUser, User } from '../src/shared/types';
 import { createSeedDatabase } from './seed';
+import {
+  isGoogleDriveStorageConfigured,
+  readGoogleDriveDatabaseSnapshot,
+  writeGoogleDriveDatabaseSnapshot,
+} from './googleDriveStorage';
 
 const DATA_DIR = process.env.VIDYAKOSHA_DATA_DIR
   ? path.resolve(process.env.VIDYAKOSHA_DATA_DIR)
@@ -10,6 +15,89 @@ const DATA_DIR = process.env.VIDYAKOSHA_DATA_DIR
 const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
 const DB_FILE = path.join(DATA_DIR, 'db.json');
 const SESSION_SECRET = process.env.SESSION_SECRET || 'vidyakosha-local-dev-signing-secret-2026';
+
+let driveDatabaseSaveQueue: Promise<void> = Promise.resolve();
+let driveDatabaseReady = false;
+
+function createDatabaseEncryptionKey(): Buffer {
+  return crypto.createHash('sha256').update(SESSION_SECRET).digest();
+}
+
+function encryptDatabaseSnapshot(plaintext: string): string {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', createDatabaseEncryptionKey(), iv);
+  const encrypted = Buffer.concat([cipher.update(plaintext, 'utf-8'), cipher.final()]);
+  return JSON.stringify({
+    version: 1,
+    iv: iv.toString('base64'),
+    tag: cipher.getAuthTag().toString('base64'),
+    data: encrypted.toString('base64'),
+  });
+}
+
+function decryptDatabaseSnapshot(snapshot: string): string {
+  const payload = JSON.parse(snapshot) as { version?: number; iv?: string; tag?: string; data?: string };
+  if (payload.version !== 1 || !payload.iv || !payload.tag || !payload.data) {
+    throw new Error('Google Drive database backup is not a recognized encrypted snapshot.');
+  }
+  const decipher = crypto.createDecipheriv(
+    'aes-256-gcm',
+    createDatabaseEncryptionKey(),
+    Buffer.from(payload.iv, 'base64')
+  );
+  decipher.setAuthTag(Buffer.from(payload.tag, 'base64'));
+  return Buffer.concat([
+    decipher.update(Buffer.from(payload.data, 'base64')),
+    decipher.final(),
+  ]).toString('utf-8');
+}
+
+function scheduleGoogleDriveDatabaseSave(db: DatabaseSchema): void {
+  if (!isGoogleDriveStorageConfigured() || !driveDatabaseReady) return;
+  const snapshot = JSON.stringify({
+    ...db,
+    payments: [],
+    tickets: [],
+    notifications: [],
+    auditLogs: [],
+    bulkImportJobs: [],
+  }, null, 2);
+  const encryptedSnapshot = encryptDatabaseSnapshot(snapshot);
+  driveDatabaseSaveQueue = driveDatabaseSaveQueue
+    .then(() => writeGoogleDriveDatabaseSnapshot(encryptedSnapshot))
+    .catch((error) => {
+      console.error('Google Drive database backup failed:', error instanceof Error ? error.message : 'unknown error');
+    });
+}
+
+export function backupDatabaseToGoogleDrive(db: DatabaseSchema): void {
+  scheduleGoogleDriveDatabaseSave(db);
+}
+
+export async function restoreDatabaseFromGoogleDrive(): Promise<boolean> {
+  driveDatabaseReady = false;
+  if (!isGoogleDriveStorageConfigured()) return false;
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  try {
+    const snapshot = await readGoogleDriveDatabaseSnapshot();
+    if (!snapshot) {
+      driveDatabaseReady = true;
+      return true;
+    }
+    const parsed = JSON.parse(decryptDatabaseSnapshot(snapshot)) as DatabaseSchema;
+    if (!parsed || !Array.isArray(parsed.users) || !Array.isArray(parsed.books) || !parsed.config) {
+      throw new Error('Google Drive database backup has an invalid format.');
+    }
+    const tempFile = `${DB_FILE}.restore.tmp`;
+    fs.writeFileSync(tempFile, JSON.stringify(parsed, null, 2), 'utf-8');
+    fs.renameSync(tempFile, DB_FILE);
+    driveDatabaseReady = true;
+    return true;
+  } catch (error) {
+    console.error('Google Drive database restore failed:', error instanceof Error ? error.message : 'unknown error');
+    return false;
+  }
+}
 
 export function getUploadsDir(): string {
   fs.mkdirSync(UPLOADS_DIR, { recursive: true });
