@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import express, { type NextFunction, type Request, type Response } from 'express';
+import { Readable } from 'node:stream';
 import {
   calculateCheckoutTotals,
   canPublishBook,
@@ -36,13 +37,15 @@ import {
   verifyToken,
 } from './server/store';
 import {
-  createR2PdfReadUrl,
-  createR2PdfUploadUrl,
-  isR2PdfFileId,
-  isR2StorageConfigured,
+  createGoogleDrivePdfUploadSession,
+  getGoogleDriveIdFromPdfFileId,
+  getGoogleDrivePdfResponse,
+  isGoogleDrivePdfFileId,
+  isGoogleDriveStorageConfigured,
   MAX_PDF_SIZE_BYTES,
-  verifyR2PdfUpload,
-} from './server/r2Storage';
+  uploadGoogleDrivePdfChunk,
+  verifyGoogleDrivePdfUpload,
+} from './server/googleDriveStorage';
 
 interface AuthedRequest extends Request {
   authUser?: User;
@@ -111,7 +114,7 @@ async function startServer() {
       res.setHeader('Access-Control-Allow-Origin', origin);
       res.setHeader('Vary', 'Origin');
       res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization,Range');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization,Range,Content-Range');
       res.setHeader('Access-Control-Expose-Headers', 'Accept-Ranges,Content-Length,Content-Range,ETag,Location');
     }
     if (req.method === 'OPTIONS') {
@@ -410,7 +413,7 @@ async function startServer() {
 
     const hasPdf = Boolean(
       book.pdfFileId &&
-      (isR2PdfFileId(book.pdfFileId)
+      (isGoogleDrivePdfFileId(book.pdfFileId)
         ? decoded.accessLevel === 'full'
         : getPdfUploadPath(book.pdfFileId))
     );
@@ -454,16 +457,38 @@ async function startServer() {
       res.status(404).json({ error: 'PDF file not found for this book.' });
       return;
     }
-    if (isR2PdfFileId(book.pdfFileId)) {
+    if (isGoogleDrivePdfFileId(book.pdfFileId)) {
       if (decoded.accessLevel !== 'full') {
         res.status(403).json({ error: 'Full PDF access is required.' });
         return;
       }
+      const driveFileId = getGoogleDriveIdFromPdfFileId(book.pdfFileId!);
+      if (!driveFileId) {
+        res.status(404).json({ error: 'PDF file not found for this book.' });
+        return;
+      }
       try {
+        const upstream = await getGoogleDrivePdfResponse(driveFileId, req.headers.range);
+        res.status(upstream.status);
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', 'inline');
         res.setHeader('Cache-Control', 'private, no-store');
-        res.redirect(302, await createR2PdfReadUrl(book.pdfFileId!));
+        res.setHeader('Accept-Ranges', 'bytes');
+        for (const header of ['content-length', 'content-range', 'etag']) {
+          const value = upstream.headers.get(header);
+          if (value) res.setHeader(header, value);
+        }
+        if (!upstream.body) {
+          res.end();
+          return;
+        }
+        Readable.from(upstream.body as any).on('error', () => res.destroy()).pipe(res);
       } catch (error) {
-        res.status(503).json({ error: error instanceof Error ? error.message : 'PDF storage is unavailable.' });
+        if (!res.headersSent) {
+          res.status(503).json({ error: error instanceof Error ? error.message : 'Google Drive PDF is unavailable.' });
+        } else {
+          res.destroy();
+        }
       }
       return;
     }
@@ -951,43 +976,101 @@ async function startServer() {
   // ================= ADMIN ENDPOINTS =================
 
 
-  app.post('/api/admin/books/upload-pdf/presign', requirePerm('books.manage'), async (req: AuthedRequest, res) => {
+  app.post('/api/admin/books/upload-pdf/session', requirePerm('books.manage'), async (req: AuthedRequest, res) => {
     const fileName = String(req.body?.fileName || 'textbook.pdf');
     const sizeBytes = Number(req.body?.sizeBytes || 0);
-    if (!isR2StorageConfigured()) {
-      res.status(503).json({ error: 'Large PDF storage is not configured yet. Set up Cloudflare R2 in the server environment.' });
+    if (!isGoogleDriveStorageConfigured()) {
+      res.status(503).json({ error: 'Google Drive storage is not configured yet. Set up the Google Drive connection in Render.' });
       return;
     }
     if (!fileName.toLowerCase().endsWith('.pdf') || !Number.isSafeInteger(sizeBytes) || sizeBytes <= 0 || sizeBytes > MAX_PDF_SIZE_BYTES) {
       res.status(400).json({ error: 'Choose a PDF file no larger than 500 MB.' });
       return;
     }
-    const pdfFileId = `r2pdf-${crypto.randomUUID()}.pdf`;
     try {
-      const uploadUrl = await createR2PdfUploadUrl(pdfFileId);
-      res.json({ pdfFileId, uploadUrl });
+      const session = await createGoogleDrivePdfUploadSession(fileName, sizeBytes);
+      res.json(session);
     } catch (error) {
-      res.status(503).json({ error: error instanceof Error ? error.message : 'Unable to prepare the PDF upload.' });
+      res.status(503).json({ error: error instanceof Error ? error.message : 'Unable to prepare the Google Drive upload.' });
     }
   });
 
+  app.put(
+    '/api/admin/books/upload-pdf/chunk/:sessionId',
+    requirePerm('books.manage'),
+    express.raw({ type: 'application/octet-stream', limit: '10mb' }),
+    async (req: AuthedRequest, res) => {
+      try {
+        const chunk = req.body as Buffer;
+        const range = String(req.headers['content-range'] || '').match(/^bytes (\d+)-(\d+)\/(\d+)$/);
+        if (!Buffer.isBuffer(chunk) || !range) {
+          res.status(400).json({ error: 'PDF upload chunk or Content-Range is missing.' });
+          return;
+        }
+        const start = Number(range[1]);
+        const end = Number(range[2]);
+        const total = Number(range[3]);
+        if (end - start + 1 !== chunk.length) {
+          res.status(400).json({ error: 'PDF upload chunk length does not match Content-Range.' });
+          return;
+        }
+        const result = await uploadGoogleDrivePdfChunk(req.params.sessionId, start, total, chunk);
+        res.json(result);
+      } catch (error) {
+        res.status(400).json({ error: error instanceof Error ? error.message : 'Google Drive PDF upload failed.' });
+      }
+    }
+  );
+
   app.post('/api/admin/books/upload-pdf/complete', requirePerm('books.manage'), async (req: AuthedRequest, res) => {
-    const pdfFileId = String(req.body?.pdfFileId || '');
+    const driveFileId = String(req.body?.driveFileId || '');
     const fileName = String(req.body?.fileName || 'textbook.pdf');
     const sizeBytes = Number(req.body?.sizeBytes || 0);
-    if (!isR2PdfFileId(pdfFileId) || !Number.isSafeInteger(sizeBytes) || sizeBytes <= 0 || sizeBytes > MAX_PDF_SIZE_BYTES) {
+    if (!/^[A-Za-z0-9_-]{10,}$/.test(driveFileId) || !Number.isSafeInteger(sizeBytes) || sizeBytes <= 0 || sizeBytes > MAX_PDF_SIZE_BYTES) {
       res.status(400).json({ error: 'Invalid PDF upload details.' });
       return;
     }
     try {
-      await verifyR2PdfUpload(pdfFileId, sizeBytes);
+      await verifyGoogleDrivePdfUpload(driveFileId, sizeBytes);
+      const pdfFileId = `gdrivepdf-${driveFileId}`;
       const db = loadDb();
-      appendAuditLog(db, req.authUser!, 'PDF_UPLOADED', 'book', pdfFileId, `Uploaded ${fileName} (${sizeBytes} bytes)`);
+      appendAuditLog(db, req.authUser!, 'PDF_UPLOADED', 'book', pdfFileId, `Uploaded ${fileName} (${sizeBytes} bytes) to Google Drive`);
       saveDb(db);
-      const readUrl = await createR2PdfReadUrl(pdfFileId);
-      res.status(201).json({ pdfFileId, fileName, sizeBytes, readUrl, pageCount: 1 });
+      res.status(201).json({
+        pdfFileId,
+        fileName,
+        sizeBytes,
+        readUrl: `/api/admin/books/upload-pdf/preview/${encodeURIComponent(driveFileId)}`,
+        pageCount: 1,
+      });
     } catch (error) {
       res.status(400).json({ error: error instanceof Error ? error.message : 'PDF upload could not be verified.' });
+    }
+  });
+
+  app.get('/api/admin/books/upload-pdf/preview/:driveFileId', requirePerm('books.manage'), async (req: AuthedRequest, res) => {
+    try {
+      const upstream = await getGoogleDrivePdfResponse(req.params.driveFileId, req.headers.range);
+      res.status(upstream.status);
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', 'inline');
+      res.setHeader('Cache-Control', 'private, no-store');
+      res.setHeader('Accept-Ranges', 'bytes');
+      for (const header of ['content-length', 'content-range', 'etag']) {
+        const value = upstream.headers.get(header);
+        if (value) res.setHeader(header, value);
+      }
+      if (!upstream.body) {
+        res.end();
+        return;
+      }
+      Readable.from(upstream.body as any).on('error', () => res.destroy()).pipe(res);
+    } catch (error) {
+      if (!res.headersSent) {
+        res.status(503).json({ error: error instanceof Error ? error.message : 'Google Drive PDF preview is unavailable.' });
+      } else {
+        res.destroy();
+      }
     }
   });
 
