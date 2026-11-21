@@ -17,7 +17,7 @@ Open your repository's **Actions** tab and run the latest **Build VidyaKosha (.a
 
 ## Google Drive storage for book PDFs
 
-Book PDFs up to 500 MB are uploaded in resumable 8 MB chunks to a private `VidyaKosha Books` folder in the connected Google Drive. The PDF stays private; students read it through VidyaKosha's access-controlled API.
+Book PDFs up to 500 MB are uploaded in resumable 8 MB chunks to a private `VidyaKosha Books` folder in the connected Google Drive. The PDF stays private; students read it through VidyaKosha's access-controlled API. The app also restores and updates an AES-256-GCM encrypted database snapshot in that private folder after app database saves, so catalog and account data can survive Render Free restarts. Keep the Render `SESSION_SECRET` stable: it is used to decrypt the snapshot.
 
 ### Configure Google Drive once
 
@@ -28,6 +28,6 @@ Book PDFs up to 500 MB are uploaded in resumable 8 MB chunks to a private `Vidya
 5. Put the OAuth client ID, client secret, and refresh token in Render's Environment as `GOOGLE_DRIVE_CLIENT_ID`, `GOOGLE_DRIVE_CLIENT_SECRET`, and `GOOGLE_DRIVE_REFRESH_TOKEN`. Do not commit or share these values.
 6. Before relying on the setup, set the OAuth consent app to Production. Google refresh tokens for an External app left in Testing expire after 7 days for Drive scopes. Follow any verification requirements Google shows for the app.
 
-VidyaKosha creates and uses its own folder. Google Drive free storage is shared with Gmail and Photos; check the Google account's remaining space before uploading books.
+VidyaKosha creates and uses its own folder. The encrypted snapshot contains student profiles, email addresses, account records (password hashes and salts only, never plaintext passwords), books, subscriptions, and reading activity. It omits payment transactions, support tickets, notifications, audit logs, and bulk-import error rows. Google Drive free storage is shared with Gmail and Photos; check the Google account's remaining space before uploading books.
 
 Set `INITIAL_ADMIN_NAME`, `INITIAL_ADMIN_EMAIL`, and `INITIAL_ADMIN_PASSWORD` in Render before deploying the clean catalog. Keep credentials private.
