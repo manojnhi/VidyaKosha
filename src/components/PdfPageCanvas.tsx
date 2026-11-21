@@ -65,20 +65,22 @@ export const PdfPageCanvas: React.FC<PdfPageCanvasProps> = ({
           loadingTaskRef.current = null;
         }
 
-        let pdfBytes: Uint8Array;
+        let task: PDFDocumentLoadingTask;
         if (pdfUrl.startsWith('native-pdf://')) {
           const id = pdfUrl.slice('native-pdf://'.length);
           const localBytes = getNativePdfBytes(id);
           if (!localBytes) throw new Error('Offline PDF binary unavailable.');
-          pdfBytes = localBytes;
+          task = pdfjsLib.getDocument({ data: localBytes.slice() });
         } else {
-          const res = await fetch(resolveApiUrl(pdfUrl));
-          if (!res.ok) throw new Error(`Unable to fetch PDF (${res.status})`);
-          pdfBytes = new Uint8Array(await res.arrayBuffer());
+          task = pdfjsLib.getDocument({
+            url: resolveApiUrl(pdfUrl),
+            disableRange: false,
+            disableStream: false,
+            rangeChunkSize: 1024 * 1024,
+          });
         }
 
         if (cancelled) return;
-        const task = pdfjsLib.getDocument({ data: pdfBytes.slice() });
         loadingTaskRef.current = task;
         const doc = await task.promise;
         if (cancelled) {
