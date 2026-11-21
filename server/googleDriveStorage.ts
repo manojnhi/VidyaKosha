@@ -6,6 +6,7 @@ const GOOGLE_API = 'https://www.googleapis.com/drive/v3';
 const GOOGLE_UPLOAD_API = 'https://www.googleapis.com/upload/drive/v3';
 const GOOGLE_TOKEN_API = 'https://oauth2.googleapis.com/token';
 const APP_FOLDER_NAME = 'VidyaKosha Books';
+const DATABASE_FILE_NAME = 'vidyakosha-database.json';
 
 type UploadSession = {
   location: string;
@@ -18,6 +19,7 @@ type UploadSession = {
 let cachedAccessToken = '';
 let accessTokenExpiresAt = 0;
 let cachedFolderId = '';
+let cachedDatabaseFileId = '';
 const uploadSessions = new Map<string, UploadSession>();
 
 export function isGoogleDriveStorageConfigured(): boolean {
@@ -226,3 +228,71 @@ export async function getGoogleDrivePdfResponse(fileId: string, range?: string):
   return response;
 }
 
+
+async function findDatabaseFileId(): Promise<string | null> {
+  if (cachedDatabaseFileId) return cachedDatabaseFileId;
+  const folderId = await ensureAppFolder();
+  const query = new URLSearchParams({
+    q: `'${folderId}' in parents and name='${DATABASE_FILE_NAME}' and trashed=false`,
+    spaces: 'drive',
+    pageSize: '1',
+    fields: 'files(id)',
+  });
+  const response = await driveRequest(`${GOOGLE_API}/files?${query.toString()}`);
+  if (!response.ok) return driveError(response, 'Could not find the VidyaKosha database backup.');
+  const payload = await response.json() as { files?: Array<{ id: string }> };
+  cachedDatabaseFileId = payload.files?.[0]?.id || '';
+  return cachedDatabaseFileId || null;
+}
+
+export async function readGoogleDriveDatabaseSnapshot(): Promise<string | null> {
+  const fileId = await findDatabaseFileId();
+  if (!fileId) return null;
+  const response = await driveRequest(`${GOOGLE_API}/files/${encodeURIComponent(fileId)}?alt=media`);
+  if (!response.ok) return driveError(response, 'Could not restore the VidyaKosha database backup.');
+  return response.text();
+}
+
+export async function writeGoogleDriveDatabaseSnapshot(snapshot: string): Promise<void> {
+  const folderId = await ensureAppFolder();
+  let fileId = await findDatabaseFileId();
+  const uploadBytes = Buffer.from(snapshot, 'utf-8');
+  const query = new URLSearchParams({ uploadType: 'resumable', fields: 'id' });
+  const uploadUrl = `https://www.googleapis.com/upload/drive/v3/files${fileId ? `/${encodeURIComponent(fileId)}` : ''}?${query.toString()}`;
+  const metadata = fileId
+    ? {}
+    : {
+        name: DATABASE_FILE_NAME,
+        mimeType: 'application/json',
+        parents: [folderId],
+      };
+
+  const initiation = await driveRequest(uploadUrl, {
+    method: fileId ? 'PATCH' : 'POST',
+    headers: {
+      'Content-Type': 'application/json; charset=UTF-8',
+      'X-Upload-Content-Type': 'application/json',
+      'X-Upload-Content-Length': String(uploadBytes.length),
+    },
+    body: JSON.stringify(metadata),
+  });
+  if (!initiation.ok) return driveError(initiation, 'Could not start the VidyaKosha database backup.');
+  const sessionUrl = initiation.headers.get('Location');
+  if (!sessionUrl) throw new Error('Google Drive did not return a database backup upload link.');
+
+  const uploaded = await driveRequest(sessionUrl, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      'Content-Length': String(uploadBytes.length),
+    },
+    body: uploadBytes,
+  });
+  if (!uploaded.ok) return driveError(uploaded, 'Could not save the VidyaKosha database backup.');
+  if (!fileId) {
+    const response = await uploaded.json().catch(() => ({})) as { id?: string };
+    if (!response.id) throw new Error('Google Drive did not return the database backup ID.');
+    fileId = response.id;
+    cachedDatabaseFileId = fileId;
+  }
+}
