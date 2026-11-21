@@ -35,6 +35,8 @@ import {
   signToken,
   toSafeUser,
   verifyToken,
+  restoreDatabaseFromGoogleDrive,
+  backupDatabaseToGoogleDrive,
 } from './server/store';
 import {
   createGoogleDrivePdfUploadSession,
@@ -101,6 +103,13 @@ function requirePerm(permission: Permission) {
 }
 
 async function startServer() {
+  const driveConfigured = isGoogleDriveStorageConfigured();
+  const driveDatabaseReady = await restoreDatabaseFromGoogleDrive();
+  if (driveConfigured && !driveDatabaseReady) {
+    throw new Error('Google Drive database could not be restored. Check the Drive OAuth settings before starting the library.');
+  }
+  const initialDatabase = loadDb();
+  if (driveDatabaseReady) backupDatabaseToGoogleDrive(initialDatabase);
   const app = express();
   const allowedApiOrigins = new Set([
     'https://localhost',
