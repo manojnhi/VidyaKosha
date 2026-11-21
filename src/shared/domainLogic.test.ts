@@ -268,52 +268,32 @@ test('pickPreferredVoice and getNextAudioTarget handle locales and preview limit
   assert.ok(estimateSegmentDurationMs('One two three four five', 1) >= 1400);
 });
 
-test('handleNativeLocalApi serves full catalog, auth role switch, reader content, and bookmarks offline', async () => {
+test('native local API starts without bundled demo accounts or books', async () => {
   resetNativeLocalDb();
-  assert.ok(SEED_BOOKS.length >= 6);
+  assert.equal(SEED_BOOKS.length, 0);
 
   const boot = await handleNativeLocalApi<{ books?: unknown[]; uiLanguages: unknown[]; boards: unknown[] }>('/api/bootstrap');
   assert.ok(boot.uiLanguages.length >= 3);
   assert.ok(boot.boards.length >= 4);
 
   const catalog = await handleNativeLocalApi<{ books: { id: string }[] }>('/api/books');
-  assert.ok(catalog.books.length >= 5);
+  assert.equal(catalog.books.length, 0);
 
-  const switched = await handleNativeLocalApi<{ token: string; user: { id: string; role: string } }>(
-    '/api/auth/demo-switch',
-    { method: 'POST', body: JSON.stringify({ role: 'student' }) }
+  await assert.rejects(
+    handleNativeLocalApi('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email: 'aarav@student.vidyakosha.edu', password: 'Student@123' }),
+    }),
+    /Invalid email or password/
   );
-  assert.equal(switched.user.role, 'student');
-  assert.ok(switched.token.startsWith('native:'));
-
-  const tokenRes = await handleNativeLocalApi<{ accessToken: string }>(
-    '/api/books/bk-sci-8-en/access-token',
-    { method: 'POST' },
-    switched.token
-  );
-  const contentRes = await handleNativeLocalApi<{ pages: unknown[]; accessLevel: string }>(
-    `/api/books/bk-sci-8-en/content?token=${encodeURIComponent(tokenRes.accessToken)}`,
-    {},
-    switched.token
-  );
-  assert.equal(contentRes.accessLevel, 'full');
-  assert.ok(contentRes.pages.length >= 3);
-
-  const bmRes = await handleNativeLocalApi<{ bookmark: { id: string; pageNumber: number } }>(
-    '/api/reader/bookmarks',
-    { method: 'POST', body: JSON.stringify({ bookId: 'bk-sci-8-en', pageNumber: 2, label: 'Force Notes' }) },
-    switched.token
-  );
-  assert.equal(bmRes.bookmark.pageNumber, 2);
 });
 
-test('pdf-lib preview slicing and nativeLocalApi PDF book workflow work end-to-end', async () => {
+test('PDF utility supports PDF creation, page slicing, and native byte storage', async () => {
   const { PDFDocument } = await import('pdf-lib');
-  const { storeNativePdfBytes } = await import('../utils/nativeLocalApi');
+  const { storeNativePdfBytes, getNativePdfBytes } = await import('../utils/nativeLocalApi');
 
   resetNativeLocalDb();
 
-  // Build a real 3-page PDF and slice to 1 preview page
   const doc = await PDFDocument.create();
   doc.addPage([400, 500]).drawText('Page 1');
   doc.addPage([400, 500]).drawText('Page 2');
@@ -328,57 +308,7 @@ test('pdf-lib preview slicing and nativeLocalApi PDF book workflow work end-to-e
   assert.equal(slicedDoc.getPageCount(), 1);
 
   storeNativePdfBytes('pdf-test-3p', pdfBytes);
-
-  const adminSwitch = await handleNativeLocalApi<{ token: string }>(
-    '/api/auth/demo-switch',
-    { method: 'POST', body: JSON.stringify({ role: 'super_admin' }) }
-  );
-
-  const created = await handleNativeLocalApi<{ book: { id: string; format: string; totalPages: number } }>(
-    '/api/admin/books',
-    {
-      method: 'POST',
-      body: JSON.stringify({
-        title: 'Uploaded Sample PDF Textbook',
-        author: 'Test Author',
-        isbn: '978-93-99999-01-1',
-        status: 'published',
-        isFree: true,
-        totalPages: 3,
-        pdfFileId: 'pdf-test-3p',
-        pdfFileName: 'sample.pdf',
-        pdfFileSizeBytes: pdfBytes.byteLength,
-        license: {
-          rightsHolder: 'VidyaKosha Press',
-          licenseType: 'publisher_direct',
-          licenseNumber: 'LIC-PDF-001',
-          distributionPermissionGranted: true,
-          validFrom: '2026-01-01T00:00:00.000Z',
-          validUntil: '2028-12-31T00:00:00.000Z',
-          allowOfflineDownload: true,
-          allowPrinting: false,
-          territoryCountries: ['IN'],
-        },
-      }),
-    },
-    adminSwitch.token
-  );
-  assert.equal(created.book.format, 'pdf');
-  assert.equal(created.book.totalPages, 3);
-
-  const tokenRes = await handleNativeLocalApi<{ accessToken: string }>(
-    `/api/books/${created.book.id}/access-token`,
-    { method: 'POST' },
-    adminSwitch.token
-  );
-  const contentRes = await handleNativeLocalApi<{ hasPdf: boolean; pdfUrl?: string; pages: unknown[] }>(
-    `/api/books/${created.book.id}/content?token=${encodeURIComponent(tokenRes.accessToken)}`,
-    {},
-    adminSwitch.token
-  );
-  assert.equal(contentRes.hasPdf, true);
-  assert.equal(contentRes.pdfUrl, 'native-pdf://pdf-test-3p');
-  assert.equal(contentRes.pages.length, 3);
+  assert.deepEqual(getNativePdfBytes('pdf-test-3p'), pdfBytes);
 });
 
 test('parseNonPdfBytes parses TXT, HTML, RTF, and unknown binary formats without rejecting', async () => {
