@@ -171,6 +171,7 @@ export function saveDb(nextDb: DatabaseSchema): void {
   fs.writeFileSync(tmpFile, JSON.stringify(nextDb, null, 2), 'utf-8');
   fs.renameSync(tmpFile, DB_FILE);
   dbCache = nextDb;
+  scheduleGoogleDriveDatabaseSave(nextDb);
 }
 
 export function toSafeUser(user: User): SafeUser {
