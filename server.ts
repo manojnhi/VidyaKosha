@@ -35,6 +35,14 @@ import {
   toSafeUser,
   verifyToken,
 } from './server/store';
+import {
+  createR2PdfReadUrl,
+  createR2PdfUploadUrl,
+  isR2PdfFileId,
+  isR2StorageConfigured,
+  MAX_PDF_SIZE_BYTES,
+  verifyR2PdfUpload,
+} from './server/r2Storage';
 
 interface AuthedRequest extends Request {
   authUser?: User;
@@ -103,7 +111,8 @@ async function startServer() {
       res.setHeader('Access-Control-Allow-Origin', origin);
       res.setHeader('Vary', 'Origin');
       res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization,Range');
+      res.setHeader('Access-Control-Expose-Headers', 'Accept-Ranges,Content-Length,Content-Range,ETag,Location');
     }
     if (req.method === 'OPTIONS') {
       res.sendStatus(204);
@@ -214,22 +223,6 @@ async function startServer() {
     saveDb(db);
     const token = signToken({ userId: user.id }, 60 * 60 * 24 * 7);
     res.json({ token, user: toSafeUser(user) });
-  });
-
-  // Auth: Demo role switcher (for evaluating all 5 roles smoothly)
-  app.post('/api/auth/demo-switch', (req: AuthedRequest, res) => {
-    const db = loadDb();
-    const { role } = req.body || {};
-    const targetUser = db.users.find((u) => u.role === role && u.status === 'active');
-    if (!targetUser) {
-      res.status(404).json({ error: 'Demo user for role not found.' });
-      return;
-    }
-    targetUser.lastLoginAt = new Date().toISOString();
-    appendAuditLog(db, targetUser, 'DEMO_ROLE_SWITCH', 'user', targetUser.id, `Switched demo workspace to ${role}`);
-    saveDb(db);
-    const token = signToken({ userId: targetUser.id }, 60 * 60 * 24 * 7);
-    res.json({ token, user: toSafeUser(targetUser) });
   });
 
   // Auth: Profile update
@@ -415,7 +408,12 @@ async function startServer() {
         : p
     );
 
-    const hasPdf = Boolean(book.pdfFileId && getPdfUploadPath(book.pdfFileId));
+    const hasPdf = Boolean(
+      book.pdfFileId &&
+      (isR2PdfFileId(book.pdfFileId)
+        ? decoded.accessLevel === 'full'
+        : getPdfUploadPath(book.pdfFileId))
+    );
     const hasAttachment = Boolean(book.attachmentFileId && getFileUploadPath(book.attachmentFileId));
     res.json({
       bookId: book.id,
@@ -452,8 +450,25 @@ async function startServer() {
     }
     const db = loadDb();
     const book = db.books.find((b) => b.id === req.params.id);
-    const pdfPath = book ? getPdfUploadPath(book.pdfFileId) : null;
-    if (!book || !pdfPath) {
+    if (!book) {
+      res.status(404).json({ error: 'PDF file not found for this book.' });
+      return;
+    }
+    if (isR2PdfFileId(book.pdfFileId)) {
+      if (decoded.accessLevel !== 'full') {
+        res.status(403).json({ error: 'Full PDF access is required.' });
+        return;
+      }
+      try {
+        res.setHeader('Cache-Control', 'private, no-store');
+        res.redirect(302, await createR2PdfReadUrl(book.pdfFileId!));
+      } catch (error) {
+        res.status(503).json({ error: error instanceof Error ? error.message : 'PDF storage is unavailable.' });
+      }
+      return;
+    }
+    const pdfPath = getPdfUploadPath(book.pdfFileId);
+    if (!pdfPath) {
       res.status(404).json({ error: 'PDF file not found for this book.' });
       return;
     }
@@ -912,7 +927,7 @@ async function startServer() {
   // Parent & Teacher dedicated overviews
   app.get('/api/parent/overview', requirePerm('parent.monitor'), (req: AuthedRequest, res) => {
     const db = loadDb();
-    const childId = req.authUser!.linkedChildId || 'u-stu-1';
+    const childId = req.authUser!.linkedChildId || '';
     const child = db.users.find((u) => u.id === childId);
     res.json({
       child: child ? toSafeUser(child) : null,
@@ -934,6 +949,47 @@ async function startServer() {
   });
 
   // ================= ADMIN ENDPOINTS =================
+
+
+  app.post('/api/admin/books/upload-pdf/presign', requirePerm('books.manage'), async (req: AuthedRequest, res) => {
+    const fileName = String(req.body?.fileName || 'textbook.pdf');
+    const sizeBytes = Number(req.body?.sizeBytes || 0);
+    if (!isR2StorageConfigured()) {
+      res.status(503).json({ error: 'Large PDF storage is not configured yet. Set up Cloudflare R2 in the server environment.' });
+      return;
+    }
+    if (!fileName.toLowerCase().endsWith('.pdf') || !Number.isSafeInteger(sizeBytes) || sizeBytes <= 0 || sizeBytes > MAX_PDF_SIZE_BYTES) {
+      res.status(400).json({ error: 'Choose a PDF file no larger than 500 MB.' });
+      return;
+    }
+    const pdfFileId = `r2pdf-${crypto.randomUUID()}.pdf`;
+    try {
+      const uploadUrl = await createR2PdfUploadUrl(pdfFileId);
+      res.json({ pdfFileId, uploadUrl });
+    } catch (error) {
+      res.status(503).json({ error: error instanceof Error ? error.message : 'Unable to prepare the PDF upload.' });
+    }
+  });
+
+  app.post('/api/admin/books/upload-pdf/complete', requirePerm('books.manage'), async (req: AuthedRequest, res) => {
+    const pdfFileId = String(req.body?.pdfFileId || '');
+    const fileName = String(req.body?.fileName || 'textbook.pdf');
+    const sizeBytes = Number(req.body?.sizeBytes || 0);
+    if (!isR2PdfFileId(pdfFileId) || !Number.isSafeInteger(sizeBytes) || sizeBytes <= 0 || sizeBytes > MAX_PDF_SIZE_BYTES) {
+      res.status(400).json({ error: 'Invalid PDF upload details.' });
+      return;
+    }
+    try {
+      await verifyR2PdfUpload(pdfFileId, sizeBytes);
+      const db = loadDb();
+      appendAuditLog(db, req.authUser!, 'PDF_UPLOADED', 'book', pdfFileId, `Uploaded ${fileName} (${sizeBytes} bytes)`);
+      saveDb(db);
+      const readUrl = await createR2PdfReadUrl(pdfFileId);
+      res.status(201).json({ pdfFileId, fileName, sizeBytes, readUrl, pageCount: 1 });
+    } catch (error) {
+      res.status(400).json({ error: error instanceof Error ? error.message : 'PDF upload could not be verified.' });
+    }
+  });
 
   app.post(
     '/api/admin/books/upload-pdf',
