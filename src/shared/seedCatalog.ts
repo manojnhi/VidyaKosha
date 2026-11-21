@@ -135,38 +135,9 @@ export const SEED_CONFIG: AppConfig = {
   currencySymbol: '₹',
   taxLabel: 'GST',
   taxRatePercent: 18,
-  activePaymentProvider: 'razorpay_in',
-  paymentProviders: [
-    {
-      id: 'razorpay_in',
-      name: 'Razorpay (India — UPI, Cards, NetBanking)',
-      supportedCountries: ['IN'],
-      methodsLabel: 'UPI / RuPay / Visa / NetBanking',
-      enabled: true,
-    },
-    {
-      id: 'stripe_global',
-      name: 'Stripe Global (US / UK / International)',
-      supportedCountries: ['US', 'GB', 'IN'],
-      methodsLabel: 'Cards / Apple Pay / Google Pay',
-      enabled: true,
-    },
-    {
-      id: 'paytabs_mena',
-      name: 'PayTabs (UAE / MENA)',
-      supportedCountries: ['AE'],
-      methodsLabel: 'Mada / Cards / Wallet',
-      enabled: true,
-    },
-  ],
+  activePaymentProvider: '',
+  paymentProviders: [],
   announcements: [],
-  legalPages: {
-    refundPolicy:
-      'Annual digital book subscriptions are eligible for a 100% refund within 7 days of purchase if fewer than 2 paid chapters have been accessed offline or downloaded. Contact support with your invoice number for automated reversal to the original payment method within 5–7 business days.',
-    purchaseTerms:
-      'All subscriptions grant a personal, non-transferable, single-student (or linked family) academic license for 365 days. Distribution, screen-scraping, or unauthorized redistribution of licensed textbook files is prohibited under the publisher agreement.',
-    privacyPolicy:
-      'VidyaKosha collects only essential profile fields (name, email, class, board, language preferences, and study annotations). Payment card numbers are never stored on our servers. Users may export all personal data in JSON format or delete their account at any time from Profile Settings.',
-  },
+  legalPages: { refundPolicy: '', purchaseTerms: '', privacyPolicy: '' },
   customTranslations: {},
 };
