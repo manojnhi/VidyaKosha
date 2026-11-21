@@ -78,7 +78,6 @@ interface AppContextValue {
   closeCheckout: () => void;
   login: (email: string, password: string) => Promise<void>;
   register: (payload: Record<string, string>) => Promise<void>;
-  demoSwitchRole: (role: RoleId) => Promise<void>;
   logout: () => void;
   toggleFavorite: (bookId: string) => Promise<void>;
   saveBookOffline: (bundle: OfflineBookBundle) => void;
@@ -195,23 +194,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     [refreshAll, uiLang]
   );
 
-  const demoSwitchRole = useCallback(
-    async (role: RoleId) => {
-      const res = await apiFetch<{ token: string; user: SafeUser }>('/api/auth/demo-switch', {
-        method: 'POST',
-        body: JSON.stringify({ role }),
-      });
-      setStoredToken(res.token);
-      setShowAuthModal(false);
-      await refreshAll();
-      if (role === 'admin' || role === 'super_admin') setActiveTab('admin');
-      else if (role === 'parent') setActiveTab('parent');
-      else if (role === 'teacher') setActiveTab('teacher');
-      else setActiveTab('library');
-    },
-    [refreshAll]
-  );
-
   const logout = useCallback(() => {
     setStoredToken(null);
     setActiveTab('library');
@@ -303,7 +285,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         },
         login,
         register,
-        demoSwitchRole,
         logout,
         toggleFavorite,
         saveBookOffline,
