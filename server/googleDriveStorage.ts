@@ -55,9 +55,11 @@ async function getAccessToken(): Promise<string> {
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body,
   });
-  const payload = await response.json().catch(() => ({})) as { access_token?: string; expires_in?: number; error_description?: string };
+  const payload = await response.json().catch(() => ({})) as { access_token?: string; expires_in?: number; error?: string; error_description?: string };
   if (!response.ok || !payload.access_token) {
-    throw new Error(payload.error_description || 'Google Drive authorization failed. Check the OAuth credentials.');
+    const errorCode = payload.error ? `, ${payload.error}` : '';
+    const reason = payload.error_description || 'No error details were returned.';
+    throw new Error(`Google OAuth token refresh failed (HTTP ${response.status}${errorCode}): ${reason}`);
   }
   cachedAccessToken = payload.access_token;
   accessTokenExpiresAt = Date.now() + Math.max(60, Number(payload.expires_in || 3600)) * 1000;
@@ -74,11 +76,14 @@ async function driveRequest(url: string, init: RequestInit = {}): Promise<Respon
 async function driveError(response: Response, fallback: string): Promise<never> {
   const body = await response.text().catch(() => '');
   let detail = '';
+  let status = '';
   try {
-    const parsed = JSON.parse(body) as { error?: { message?: string } };
+    const parsed = JSON.parse(body) as { error?: { message?: string; status?: string } };
     detail = parsed.error?.message || '';
+    status = parsed.error?.status || '';
   } catch { /* use safe fallback */ }
-  throw new Error(detail || `${fallback} (Google Drive ${response.status})`);
+  const apiStatus = status ? `, ${status}` : '';
+  throw new Error(`${fallback} (Google Drive HTTP ${response.status}${apiStatus}): ${detail || 'No error details were returned.'}`);
 }
 
 async function ensureAppFolder(): Promise<string> {
